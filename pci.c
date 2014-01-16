@@ -109,7 +109,17 @@ pci_device_register(xc_interface *xch, domid_t domid, ioservid_t ioservid,
     if (rc < 0)
         goto fail2;
 
+    rc = xc_hvm_pci_hotplug_enable(xch, domid, info->device);
+    if (rc < 0)
+        goto fail3;
+
     return 0;
+
+fail3:
+    DBG("fail3\n");
+
+    (void) xc_hvm_unmap_pcidev_from_ioreq_server(xch, domid, ioservid,
+                                                 pci.bdf);
 
 fail2:
     DBG("fail2\n");
@@ -124,11 +134,13 @@ fail1:
 void
 pci_device_deregister(void)
 {
-    DBG("%02x:%02x:%02x\n",
-        (pci.bdf >> 8) & 0xff,
-        (pci.bdf >> 5) & 0x1f,
-        (pci.bdf     ) & 0x07);
+    uint8_t bus = (pci.bdf >> 8) & 0xff;
+    uint8_t device = (pci.bdf >> 3) & 0x1f;
+    uint8_t function= pci.bdf & 0x07;
 
+    DBG("%02x:%02x:%02x\n", bus, device, function);
+
+    (void) xc_hvm_pci_hotplug_disable(pci.xch, pci.domid, device);
     (void) xc_hvm_unmap_pcidev_from_ioreq_server(pci.xch, pci.domid,
 						 pci.ioservid, pci.bdf);
 }
@@ -318,6 +330,8 @@ pci_map_bar(unsigned int index)
 {
     pci_bar_t *bar = &pci.bar[index];
 
+    DBG("%d: %08x\n", index, bar->addr);
+
     if (bar->ops->map)
         bar->ops->map(bar->priv, bar->addr);
 
@@ -421,11 +435,6 @@ pci_config_read(uint64_t addr, uint64_t size)
             val |= (uint32_t)0xff << (i + 8);
     }
 
-    DBG("%02x (%02x) -> %08x\n",
-        (uint8_t)addr,
-        (uint8_t)size,
-        val);
-
 done:
     return val;
 }
@@ -448,11 +457,6 @@ pci_config_write(uint64_t addr, uint64_t size, uint32_t val)
     addr &= 0xff;
     addr += size >> 16;
     size &= 0xffff;
-
-    DBG("%02x (%02x) <- %08x\n",
-        (uint8_t)addr,
-        (uint8_t)size,
-        val);
 
     for (i = 0; i < size; i++) {
         if ((addr + i) < PCI_CONFIG_SIZE) {
@@ -482,3 +486,13 @@ pci_config_dump(void)
                 pci.config[i ]);
     }
 }
+
+/*
+ * Local variables:
+ * mode: C
+ * c-file-style: "BSD"
+ * c-basic-offset: 4
+ * c-tab-always-indent: nil
+ * indent-tabs-mode: nil
+ * End:
+ */
