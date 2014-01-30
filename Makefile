@@ -2,7 +2,7 @@ TARGET = demu
 
 OBJS :=	device.o \
 	pci.o \
-	main.o
+	demu.o
 
 CFLAGS  = -I$(shell pwd)/include
 

@@ -411,7 +411,9 @@ demu_initialize(domid_t domid, unsigned int vcpus, unsigned int bus,
     int             rc;
     xc_dominfo_t    dominfo;
     unsigned long   pfn;
+    unsigned long   buf_pfn;
     evtchn_port_t   port;
+    evtchn_port_t   buf_port;
     int             i;
 
     demu_state.domid = domid;
@@ -433,8 +435,8 @@ demu_initialize(domid_t domid, unsigned int vcpus, unsigned int bus,
     
     demu_seq_next();
 
-    rc = xc_hvm_get_ioreq_server_pfn(demu_state.xch, demu_state.domid,
-				     demu_state.ioservid, &pfn);
+    rc = xc_hvm_get_ioreq_server_info(demu_state.xch, demu_state.domid,
+                                      demu_state.ioservid, &pfn, &buf_pfn, &buf_port);
     if (rc < 0)
         goto fail4;
 
@@ -448,25 +450,20 @@ demu_initialize(domid_t domid, unsigned int vcpus, unsigned int bus,
 
     demu_seq_next();
 
-    rc = xc_hvm_get_ioreq_server_buf_pfn(demu_state.xch, demu_state.domid,
-					 demu_state.ioservid, &pfn);
-    if (rc < 0)
-        goto fail6;
- 
     demu_state.buffered_iopage = xc_map_foreign_range(demu_state.xch,
                                                       demu_state.domid,
                                                       XC_PAGE_SIZE,
                                                       PROT_READ | PROT_WRITE,
-                                                      pfn);
+                                                      buf_pfn);
     if (demu_state.buffered_iopage == NULL)
-        goto fail7;
+        goto fail6;
 
     demu_seq_next();
 
     demu_state.ioreq_local_port = malloc(sizeof (evtchn_port_t) *
                                          demu_state.vcpus);
     if (demu_state.ioreq_local_port == NULL)
-        goto fail8;
+        goto fail7;
 
     for (i = 0; i < demu_state.vcpus; i++)
         demu_state.ioreq_local_port[i] = -1;
@@ -475,32 +472,27 @@ demu_initialize(domid_t domid, unsigned int vcpus, unsigned int bus,
 
     demu_state.xceh = xc_evtchn_open(NULL, 0);
     if (demu_state.xceh == NULL)
-        goto fail9;
+        goto fail8;
 
     demu_seq_next();
 
     for (i = 0; i < demu_state.vcpus; i++) {
-        evtchn_port_t port = demu_state.iopage->vcpu_ioreq[i].vp_eport;
+        port = demu_state.iopage->vcpu_ioreq[i].vp_eport;
 
         rc = xc_evtchn_bind_interdomain(demu_state.xceh, demu_state.domid,
                                         port);
         if (rc < 0)
-            goto fail10;
+            goto fail9;
 
         demu_state.ioreq_local_port[i] = rc;
     }
 
     demu_seq_next();
 
-    rc = xc_hvm_get_ioreq_server_buf_port(demu_state.xch, demu_state.domid,
-                                          demu_state.ioservid, &port);
-    if (rc < 0)
-	    goto fail11;
-
     rc = xc_evtchn_bind_interdomain(demu_state.xceh, demu_state.domid,
-                                    port);
+                                    buf_port);
     if (rc < 0)
-        goto fail12;
+        goto fail10;
 
     demu_state.buf_ioreq_local_port = rc;
 
@@ -509,18 +501,12 @@ demu_initialize(domid_t domid, unsigned int vcpus, unsigned int bus,
     rc = device_initialize(demu_state.xch, demu_state.domid,
                            demu_state.ioservid, bus, device, function);
     if (rc < 0)
-        goto fail13;
+        goto fail11;
 
     demu_seq_next();
 
     assert(demu_state.seq == DEMU_SEQ_INITIALIZED);
     return 0;
-
-fail13:
-    DBG("fail13\n");
-
-fail12:
-    DBG("fail12\n");
 
 fail11:
     DBG("fail11\n");
