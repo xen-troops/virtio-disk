@@ -15,7 +15,7 @@ ifeq ($(shell uname),Linux)
 LDLIBS := -lutil -lrt
 endif
 
-LDLIBS += -lxenctrl
+LDLIBS += -lxenctrl -lvncserver
 
 # Get gcc to generate the dependencies for us.
 CFLAGS   += -Wp,-MD,$(@D)/.$(@F).d

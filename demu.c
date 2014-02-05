@@ -60,14 +60,14 @@
 #include <xenctrl.h>
 #include <xen/hvm/ioreq.h>
 
+#include <rfb/rfb.h>
+#include <rfb/keysym.h>
+
 #include "debug.h"
 #include "mapcache.h"
 #include "device.h"
 #include "pci.h"
 #include "demu.h"
-
-#define FALSE 0
-#define TRUE  1
 
 #define mb() asm volatile ("" : : : "memory")
 
@@ -118,6 +118,7 @@ typedef enum {
     DEMU_SEQ_EVTCHN_OPEN,
     DEMU_SEQ_PORTS_BOUND,
     DEMU_SEQ_BUF_PORT_BOUND,
+    DEMU_SEQ_VNC_INITIALIZED,
     DEMU_SEQ_INITIALIZED,
     DEMU_NR_SEQS
 } demu_seq_t;
@@ -144,10 +145,17 @@ typedef struct demu_state {
     buffered_iopage_t   *buffered_iopage;
     evtchn_port_t       buf_ioreq_port;
     evtchn_port_t       buf_ioreq_local_port;
+    uint8_t             *default_framebuffer;
+    uint8_t             *framebuffer;
+    rfbScreenInfoPtr    screen;
     demu_space_t	    *memory;
     demu_space_t        *port;
     demu_space_t        *pci_config;
 } demu_state_t;
+
+#define DEMU_VNC_DEFAULT_WIDTH  640
+#define DEMU_VNC_DEFAULT_HEIGHT 480
+#define DEMU_VNC_DEFAULT_DEPTH  4
 
 static demu_state_t demu_state;
 
@@ -602,6 +610,138 @@ demu_handle_ioreq(ioreq_t *ioreq)
     }
 }
 
+static void demu_vnc_mouse(int buttonMask, int x, int y, rfbClientPtr client)
+{
+    rfbDefaultPtrAddEvent(buttonMask, x, y, client);
+}
+
+static void demu_vnc_key(rfbBool down, rfbKeySym keySym, rfbClientPtr client)
+{
+}
+
+static void demu_vnc_remove_client(rfbClientPtr client)
+{
+    DBG("\n");
+}
+
+static enum rfbNewClientAction demu_vnc_add_client(rfbClientPtr client)
+{
+    DBG("\n");
+    client->clientGoneHook = demu_vnc_remove_client;
+
+    return RFB_CLIENT_ACCEPT;
+}
+
+void
+demu_vnc_new_framebuffer(uint32_t width, uint32_t height, uint32_t depth)
+{
+    rfbScreenInfoPtr    screen = demu_state.screen;
+
+    if (demu_state.framebuffer != NULL)
+        free(demu_state.framebuffer);
+
+    demu_state.framebuffer = malloc(width * height * depth);
+
+    if (demu_state.framebuffer == NULL) {
+        DBG("allocation failed: using default framebuffer (%dx%dx%d)\n",
+            DEMU_VNC_DEFAULT_WIDTH,
+            DEMU_VNC_DEFAULT_HEIGHT,
+            DEMU_VNC_DEFAULT_DEPTH);
+
+        rfbNewFramebuffer(screen,
+                          (char *)demu_state.default_framebuffer,
+                          DEMU_VNC_DEFAULT_WIDTH,
+                          DEMU_VNC_DEFAULT_HEIGHT,
+                          8, 3,
+                          DEMU_VNC_DEFAULT_DEPTH);
+    } else {
+        DBG("%dx%dx%d\n", width, height, depth);
+
+        rfbNewFramebuffer(screen,
+                          (char *)demu_state.framebuffer,
+                          width,
+                          height,
+                          8, 3,
+                          depth);
+    }
+}
+
+uint8_t *
+demu_vnc_get_framebuffer(void)
+{
+    return demu_state.framebuffer;
+}   
+
+static int
+demu_vnc_initialize(void)
+{
+    uint8_t             *framebuffer;
+    unsigned int        x, y;
+    rfbScreenInfoPtr    screen;
+
+    framebuffer = malloc(DEMU_VNC_DEFAULT_WIDTH *
+                         DEMU_VNC_DEFAULT_HEIGHT *
+                         DEMU_VNC_DEFAULT_DEPTH);
+    if (framebuffer == NULL)
+        goto fail1;
+
+    for (y = 0; y < DEMU_VNC_DEFAULT_HEIGHT; y++) {
+        for (x = 0; x < DEMU_VNC_DEFAULT_WIDTH; x++) {
+            uint8_t *pixel = &framebuffer[(y * DEMU_VNC_DEFAULT_WIDTH + x) *
+                                          DEMU_VNC_DEFAULT_DEPTH];
+            pixel[0] = (y * 256) / DEMU_VNC_DEFAULT_HEIGHT; /* RED */
+            pixel[1] = (y * 256) / DEMU_VNC_DEFAULT_HEIGHT; /* GREEN */
+            pixel[2] = (y * 256) / DEMU_VNC_DEFAULT_HEIGHT; /* BLUE */
+        }
+    }   
+   
+    demu_state.default_framebuffer = framebuffer;
+
+    screen = rfbGetScreen(NULL, NULL,
+                          DEMU_VNC_DEFAULT_WIDTH,
+                          DEMU_VNC_DEFAULT_HEIGHT,
+                          8, 3,
+                          DEMU_VNC_DEFAULT_DEPTH);
+    if (screen == NULL)
+        goto fail2;
+ 
+    screen->frameBuffer = (char *)demu_state.default_framebuffer;
+    screen->desktopName = "DEMU";
+    screen->alwaysShared = TRUE;
+    screen->autoPort = TRUE;
+    screen->ptrAddEvent = demu_vnc_mouse;
+    screen->kbdAddEvent = demu_vnc_key;
+    screen->newClientHook = demu_vnc_add_client;
+
+    rfbInitServer(screen);
+    demu_state.screen = screen;
+    return 0;
+
+fail2:
+    DBG("fail2\n");
+    rfbScreenCleanup(screen);
+
+fail1:
+    DBG("fail1\n");
+
+    warn("fail");
+    return -1;
+}
+
+static void
+demu_vnc_teardown(void)
+{
+    rfbScreenInfoPtr    screen = demu_state.screen;
+
+    rfbShutdownServer(screen, TRUE);
+    rfbScreenCleanup(screen);
+
+    if (demu_state.framebuffer != NULL)
+        free(demu_state.framebuffer);
+ 
+    free(demu_state.default_framebuffer);
+}
+
 static void
 demu_seq_next(void)
 {
@@ -656,6 +796,10 @@ demu_seq_next(void)
             demu_state.buf_ioreq_local_port);
         break;
 
+    case DEMU_SEQ_VNC_INITIALIZED:
+        DBG(">VNC_INITIALIZED\n");
+        break;
+
     case DEMU_SEQ_INITIALIZED:
         DBG(">INITIALIZED\n");
         break;
@@ -672,6 +816,13 @@ demu_teardown(void)
     if (demu_state.seq == DEMU_SEQ_INITIALIZED) {
         DBG("<INITIALIZED\n");
         device_teardown();
+
+        demu_state.seq = DEMU_SEQ_VNC_INITIALIZED;
+    }
+
+    if (demu_state.seq == DEMU_SEQ_VNC_INITIALIZED) {
+        DBG("<VNC_INITIALIZED\n");
+        demu_vnc_teardown();
 
         demu_state.seq = DEMU_SEQ_PORTS_BOUND;
     }
@@ -877,14 +1028,23 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     demu_seq_next();
 
-    rc = device_initialize(bus, device, function, 0x01000000);
+    rc = demu_vnc_initialize();
     if (rc < 0)
         goto fail11;
 
     demu_seq_next();
 
+    rc = device_initialize(bus, device, function, 0x01000000);
+    if (rc < 0)
+        goto fail12;
+
+    demu_seq_next();
+
     assert(demu_state.seq == DEMU_SEQ_INITIALIZED);
     return 0;
+
+fail12:
+    DBG("fail12\n");
 
 fail11:
     DBG("fail11\n");
@@ -1037,7 +1197,7 @@ main(int argc, char **argv, char **envp)
     domid_t         domid;
     unsigned int    device;
     sigset_t        block;
-    struct pollfd   pfd;
+    int             efd;
     int             rc;
 
     prog = basename(argv[0]);
@@ -1119,19 +1279,40 @@ main(int argc, char **argv, char **envp)
         exit(1);
     }
 
-    pfd.fd = xc_evtchn_fd(demu_state.xceh);
-    pfd.events = POLLIN | POLLERR | POLLHUP;
-    pfd.revents = 0;
+    efd = xc_evtchn_fd(demu_state.xceh);
 
     for (;;) {
-        rc = poll(&pfd, 1, 5000);
+        fd_set          rfds;
+        fd_set          wfds;
+        fd_set          xfds;
+        int             nfds;
+        struct timeval  tv;
 
-        if (rc > 0 && pfd.revents & POLLIN)
-            demu_poll_iopages();
+        FD_ZERO(&wfds);
+        FD_ZERO(&xfds);
+
+        rfds = demu_state.screen->allFds;
+        FD_SET(efd, &rfds);
+
+        tv.tv_sec = 0;
+        tv.tv_usec = demu_state.screen->deferUpdateTime * 1000;
+
+        nfds = max(demu_state.screen->maxFd, efd) + 1;
+        rc = select(nfds, &rfds, &wfds, &xfds, &tv);
+
+        if (rc > 0) {
+            if (FD_ISSET(efd, &rfds))
+                demu_poll_iopages();
+
+            if (rfbIsActive(demu_state.screen))
+                rfbProcessEvents(demu_state.screen, 0);
+        }
 
         if (rc < 0 && errno != EINTR)
             break;
     }
+
+    demu_teardown();
 
     return 0;
 }
