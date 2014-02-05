@@ -42,6 +42,7 @@
 #include <unistd.h>
 #include <sched.h>
 #include <assert.h>
+#include <inttypes.h>
 
 #include <sys/mman.h>
 #include <sys/poll.h>
@@ -60,37 +61,31 @@
 #include <xen/hvm/ioreq.h>
 
 #include "debug.h"
+#include "mapcache.h"
 #include "device.h"
 #include "pci.h"
+#include "demu.h"
 
 #define FALSE 0
+#define TRUE  1
 
 #define mb() asm volatile ("" : : : "memory")
 
 enum {
     DEMU_OPT_DOMAIN,
-    DEMU_OPT_VCPUS,
-    DEMU_OPT_BUS,
     DEMU_OPT_DEVICE,
-    DEMU_OPT_FUNCTION,
     DEMU_NR_OPTS
     };
 
 static struct option demu_option[] = {
     {"domain", 1, NULL, 0},
-    {"vcpus", 1, NULL, 0},
-    {"bus", 1, NULL, 0},
     {"device", 1, NULL, 0},
-    {"function", 1, NULL, 0},
     {NULL, 0, NULL, 0}
 };
 
 static const char *demu_option_text[] = {
     "<domid>",
-    "<vcpu count>",
-    "<bus>",
     "<device>",
-    "<function>",
     NULL
 };
 
@@ -127,6 +122,16 @@ typedef enum {
     DEMU_NR_SEQS
 } demu_seq_t;
 
+typedef struct demu_space demu_space_t;
+
+struct demu_space {
+    demu_space_t	*next;
+    uint64_t		start;
+    uint64_t		end;
+    const io_ops_t	*ops;
+    void		    *priv;
+};
+
 typedef struct demu_state {
     demu_seq_t          seq;
     xc_interface        *xch;
@@ -134,93 +139,465 @@ typedef struct demu_state {
     domid_t             domid;
     unsigned int        vcpus;
     ioservid_t          ioservid;
-    shared_iopage_t     *iopage;
+    shared_iopage_t     *shared_iopage;
     evtchn_port_t       *ioreq_local_port;
     buffered_iopage_t   *buffered_iopage;
     evtchn_port_t       buf_ioreq_port;
     evtchn_port_t       buf_ioreq_local_port;
+    demu_space_t	    *memory;
+    demu_space_t        *port;
+    demu_space_t        *pci_config;
 } demu_state_t;
 
 static demu_state_t demu_state;
 
-static void
-handle_pio(ioreq_t *ioreq)
+void *
+demu_map_guest_pages(xen_pfn_t pfn[], unsigned int n)
 {
-    if (ioreq->dir == IOREQ_READ) {
-        if (!ioreq->data_is_ptr) {
-            ioreq->data = (uint64_t)pci_bar_read(0, ioreq->addr, ioreq->size);
-        } else {
-            assert(FALSE);
-        }
-    } else if (ioreq->dir == IOREQ_WRITE) {
-        if (!ioreq->data_is_ptr) {
-            pci_bar_write(0, ioreq->addr, ioreq->size, (uint32_t)ioreq->data);
-        } else {
-            assert(FALSE);
-        }
-    }
+    void *ptr;
+
+    ptr = xc_map_foreign_pages(demu_state.xch, demu_state.domid,
+                               PROT_READ | PROT_WRITE,
+                               pfn, n);
+    if (ptr == NULL)
+        goto fail1;
+    
+    return ptr;
+    
+fail1:
+    DBG("fail1\n");
+
+    warn("fail");
+    return NULL;
+}
+
+static demu_space_t *
+demu_find_space(demu_space_t *head, uint64_t addr)
+{
+    demu_space_t    *space;
+
+    for (space = head; space != NULL; space = space->next)
+        if (addr >= space->start && addr <= space->end)
+            return space;
+
+    return NULL;
+}
+
+static demu_space_t *
+demu_find_pci_config_space(uint8_t bdf)
+{
+    return demu_find_space(demu_state.pci_config, bdf);
+}
+
+static demu_space_t *
+demu_find_port_space(uint64_t addr)
+{
+    return demu_find_space(demu_state.port, addr);
+}
+
+static demu_space_t *
+demu_find_memory_space(uint64_t addr)
+{
+    return demu_find_space(demu_state.memory, addr);
+}
+
+static int
+demu_register_space(demu_space_t **headp, uint64_t start, uint64_t end,
+                    const io_ops_t *ops, void *priv)
+{
+    demu_space_t    *space;
+
+    if (demu_find_space(*headp, start) || demu_find_space(*headp, end))
+        goto fail1;
+
+    space = malloc(sizeof (demu_space_t));
+    if (space == NULL)
+        goto fail2;
+
+    space->start = start;
+    space->end = end;
+    space->ops = ops;
+    space->priv = priv;
+
+    space->next = *headp;
+    *headp = space;
+
+    return 0;
+
+fail2:
+    DBG("fail2\n");
+
+fail1:
+    DBG("fail1\n");
+    warn("fail");
+    return -1;
 }
 
 static void
-handle_copy(ioreq_t *ioreq)
+demu_deregister_space(demu_space_t **headp, uint64_t start)
 {
-    if (ioreq->dir == IOREQ_READ) {
-        if (!ioreq->data_is_ptr) {
-            ioreq->data = (uint64_t)pci_bar_read(1, ioreq->addr, ioreq->size);
-        } else {
-            assert(FALSE);
+    demu_space_t    **spacep;
+    demu_space_t    *space;
+
+    spacep = headp;
+    while ((space = *spacep) != NULL) {
+        if (start == space->start) {
+            *spacep = space->next;
+            free(space);
+            return;
         }
-    } else if (ioreq->dir == IOREQ_WRITE) {
-        if (!ioreq->data_is_ptr) {
-            pci_bar_write(1, ioreq->addr, ioreq->size, (uint32_t)ioreq->data);
+        spacep = &(space->next);
+    }
+    assert(FALSE);
+}
+
+int
+demu_register_pci_config_space(uint8_t bus, uint8_t device, uint8_t function,
+                               const io_ops_t *ops, void *priv)
+{
+    uint16_t    bdf;
+    int         rc;
+
+    DBG("%02x:%02x:%02x\n", bus, device, function);
+
+    bdf = (bus << 8) | (device << 3) | function;
+
+    rc = demu_register_space(&demu_state.pci_config, bdf, bdf, ops, priv);
+    if (rc < 0)
+        goto fail1;
+
+    rc = xc_hvm_map_pcidev_to_ioreq_server(demu_state.xch, demu_state.domid, demu_state.ioservid,
+                                           bdf);
+    if (rc < 0)
+        goto fail2;
+
+    return 0;
+
+fail2:
+    DBG("fail2\n");
+
+    demu_deregister_space(&demu_state.pci_config, bdf);
+
+fail1:
+    DBG("fail1\n");
+
+    warn("fail");
+    return -1;
+}
+
+int
+demu_register_port_space(uint64_t start, uint64_t size, const io_ops_t *ops, void *priv)
+{
+    int rc;
+
+    DBG("%"PRIx64" - %"PRIx64"\n", start, start + size - 1);
+
+    rc = demu_register_space(&demu_state.port, start, start + size - 1, ops, priv);
+    if (rc < 0)
+        goto fail1;
+
+    rc = xc_hvm_map_io_range_to_ioreq_server(demu_state.xch, demu_state.domid, demu_state.ioservid,
+                                             0, start, start + size - 1);
+    if (rc < 0)
+        goto fail2;
+
+    return 0;
+
+fail2:
+    DBG("fail2\n");
+
+    demu_deregister_space(&demu_state.port, start);
+
+fail1:
+    DBG("fail1\n");
+
+    warn("fail");
+    return -1;
+}
+
+int
+demu_register_memory_space(uint64_t start, uint64_t size, const io_ops_t *ops, void *priv)
+{
+    int rc;
+
+    DBG("%"PRIx64" - %"PRIx64"\n", start, start + size - 1);
+
+    rc = demu_register_space(&demu_state.memory, start, start + size - 1, ops, priv);
+    if (rc < 0)
+        goto fail1;
+
+    rc = xc_hvm_map_io_range_to_ioreq_server(demu_state.xch, demu_state.domid, demu_state.ioservid,
+                                             1, start, start + size - 1);
+    if (rc < 0)
+        goto fail2;
+
+    return 0;
+
+fail2:
+    DBG("fail2\n");
+
+    demu_deregister_space(&demu_state.memory, start);
+
+fail1:
+    DBG("fail1\n");
+
+    warn("fail");
+    return -1;
+}
+
+void
+demu_deregister_pci_config_space(uint8_t bus, uint8_t device, uint8_t function)
+{
+    uint16_t    bdf;
+
+    DBG("%02x:%02x:%02x\n", bus, device, function);
+
+    bdf = (bus << 8) | (device << 3) | function;
+
+    xc_hvm_unmap_pcidev_from_ioreq_server(demu_state.xch, demu_state.domid, demu_state.ioservid,
+                                          bdf);
+    demu_deregister_space(&demu_state.pci_config, bdf);
+}
+
+void
+demu_deregister_port_space(uint64_t start)
+{
+    DBG("%"PRIx64"\n", start);
+
+    xc_hvm_unmap_io_range_from_ioreq_server(demu_state.xch, demu_state.domid, demu_state.ioservid,
+                                            0, start);
+    demu_deregister_space(&demu_state.port, start);
+}
+
+void
+demu_deregister_memory_space(uint64_t start)
+{
+    DBG("%"PRIx64"\n", start);
+
+    xc_hvm_unmap_io_range_from_ioreq_server(demu_state.xch, demu_state.domid, demu_state.ioservid,
+                                            1, start);
+    demu_deregister_space(&demu_state.memory, start);
+}
+
+#define DEMU_IO_READ(_fn, _priv, _addr, _size, _count, _val)        \
+    do {                                                            \
+        int       		_i = 0;                                     \
+        unsigned int	_shift = 0;                                 \
+                                                                    \
+        (_val) = 0;                                                 \
+        for (_i = 0; _i < (_count); _i++)                           \
+        {                                                           \
+            (_val) |= (uint32_t)(_fn)((_priv), (_addr)) << _shift;  \
+            _shift += 8 * (_size);                                  \
+            (_addr) += (_size);                                     \
+        }                                                           \
+    } while (FALSE)
+
+static uint32_t
+demu_io_read(demu_space_t *space, uint64_t addr, uint64_t size)
+{
+    uint32_t    val = 0;
+
+    switch (size) {
+    case 1:
+        val = space->ops->readb(space->priv, addr);
+        break;
+
+    case 2:
+        if (space->ops->readw == NULL)
+            DEMU_IO_READ(space->ops->readb, space->priv, addr, 1, 2, val);
+        else
+            val = space->ops->readw(space->priv, addr);
+        break;
+
+    case 4:
+        if (space->ops->readl == NULL) {
+            if (space->ops->readw == NULL)
+                DEMU_IO_READ(space->ops->readb, space->priv, addr, 1, 4, val);
+            else
+                DEMU_IO_READ(space->ops->readw, space->priv, addr, 2, 2, val);
         } else {
-            assert(FALSE);
+            val = space->ops->readl(space->priv, addr);
         }
+        break;
+
+    default:
+        assert(FALSE);
+    }
+
+    return val;
+}
+
+#define DEMU_IO_WRITE(_fn, _priv, _addr, _size, _count, _val)   \
+    do {                                                        \
+        int             	_i = 0;                             \
+        unsigned int	_shift = 0;                             \
+                                                                \
+        for (_i = 0; _i < (_count); _i++)                       \
+        {                                                       \
+            (_fn)((_priv), (_addr), (_val) >> _shift);          \
+            _shift += 8 * (_size);                              \
+            (_addr) += (_size);                                 \
+        }                                                       \
+    } while (FALSE)
+
+static void
+demu_io_write(demu_space_t *space, uint64_t addr, uint64_t size, uint32_t val)
+{
+    switch (size) {
+    case 1:
+        space->ops->writeb(space->priv, addr, val);
+        break;
+
+    case 2:
+        if (space->ops->writew == NULL)
+            DEMU_IO_WRITE(space->ops->writeb, space->priv, addr, 1, 2, val);
+        else
+            space->ops->writew(space->priv, addr, val);
+        break;
+
+    case 4:
+        if (space->ops->writel == NULL) {
+            if (space->ops->writew == NULL)
+                DEMU_IO_WRITE(space->ops->writeb, space->priv, addr, 1, 4, val);
+            else
+                DEMU_IO_WRITE(space->ops->writew, space->priv, addr, 2, 2, val);
+        } else {
+            space->ops->writel(space->priv, addr, val);
+        }
+        break;
+
+    default:
+        assert(FALSE);
     }
 }
 
-static void
-handle_pci_config(ioreq_t *ioreq)
+static inline void
+__copy_to_guest_memory(uint64_t addr, uint64_t size, uint8_t *src)
 {
-    if (ioreq->dir == IOREQ_READ) {
-        if (!ioreq->data_is_ptr) {
-            ioreq->data = (uint32_t)pci_config_read(ioreq->addr, ioreq->size);
-        } else {
-            assert(FALSE);
-        }
-    } else if (ioreq->dir == IOREQ_WRITE) {
-        if (!ioreq->data_is_ptr) {
-            pci_config_write(ioreq->addr, ioreq->size, (uint32_t)ioreq->data);
-        } else {
-            assert(FALSE);
-        }
-    }
+    uint8_t *dst = mapcache_lookup(addr);
+
+    assert(((addr + size - 1) >> TARGET_PAGE_SHIFT) == (addr >> TARGET_PAGE_SHIFT));
+
+    if (dst == NULL)
+        goto fail1;
+
+    memcpy(dst, src, size);
+    return;
+
+fail1:
+    DBG("fail1\n");
+}
+
+static inline void
+__copy_from_guest_memory(uint64_t addr, uint64_t size, uint8_t *dst)
+{
+    uint8_t *src = mapcache_lookup(addr);
+
+    assert(((addr + size - 1) >> TARGET_PAGE_SHIFT) == (addr >> TARGET_PAGE_SHIFT));
+
+    if (src == NULL)
+        goto fail1;
+
+    memcpy(dst, src, size);
+    return;
+
+fail1:
+    DBG("fail1\n");
+
+    memset(dst, 0xff, size);
 }
 
 static void
-handle_ioreq(ioreq_t *ioreq)
+demu_handle_io(demu_space_t *space, ioreq_t *ioreq, int is_mmio)
 {
+    if (space == NULL)
+        goto fail1;
+
+    if (ioreq->dir == IOREQ_READ) {
+        if (!ioreq->data_is_ptr) {
+            ioreq->data = (uint64_t)demu_io_read(space, ioreq->addr, ioreq->size);
+        } else {
+            int i, sign;
+
+            sign = ioreq->df ? -1 : 1;
+            for (i = 0; i < ioreq->count; i++) {
+                uint32_t    data;
+                
+                data = demu_io_read(space, ioreq->addr, ioreq->size);
+
+                __copy_to_guest_memory(ioreq->data + (sign * i * ioreq->size),
+                                       ioreq->size, (uint8_t *)&data);
+
+                if (is_mmio)
+                    ioreq->addr += sign * ioreq->size;
+            }
+        }
+    } else if (ioreq->dir == IOREQ_WRITE) {
+        if (!ioreq->data_is_ptr) {
+            demu_io_write(space, ioreq->addr, ioreq->size, (uint32_t)ioreq->data);
+        } else {
+            int i, sign;
+
+            sign = ioreq->df ? -1 : 1;
+            for (i = 0; i < ioreq->count; i++) {
+                uint32_t    data;
+
+                __copy_from_guest_memory(ioreq->data + (sign * i * ioreq->size),
+                                         ioreq->size, (uint8_t *)&data);
+
+                demu_io_write(space, ioreq->addr, ioreq->size, data);
+
+                if (is_mmio)
+                    ioreq->addr += sign * ioreq->size;
+            }
+        }
+    }
+
+    return;
+
+fail1:
+    DBG("fail1\n");
+}
+ 
+static void
+demu_handle_ioreq(ioreq_t *ioreq)
+{
+    demu_space_t    *space;
+
     switch (ioreq->type) {
     case IOREQ_TYPE_PIO:
-        handle_pio(ioreq);
+        space = demu_find_port_space(ioreq->addr);
+        demu_handle_io(space, ioreq, FALSE);
         break;
 
     case IOREQ_TYPE_COPY:
-        handle_copy(ioreq);
+        space = demu_find_memory_space(ioreq->addr);
+        demu_handle_io(space, ioreq, TRUE);
         break;
 
-    case IOREQ_TYPE_PCI_CONFIG:
-        handle_pci_config(ioreq);
-        break;
+    case IOREQ_TYPE_PCI_CONFIG: {
+        uint16_t    bdf;
 
+        bdf = (uint16_t)(ioreq->addr >> 8);
+
+        ioreq->addr &= 0xff;
+        ioreq->addr += ioreq->size >> 16;
+        ioreq->size &= 0xffff;
+
+        space = demu_find_pci_config_space(bdf);
+        demu_handle_io(space, ioreq, FALSE);
+        break;
+    }
     case IOREQ_TYPE_TIMEOFFSET:
         break;
 
     case IOREQ_TYPE_INVALIDATE:
+        mapcache_invalidate();
         break;
 
     default:
-        DBG("UNKNOWN (%02x)", ioreq->type);
+        assert(FALSE);
         break;
     }
 }
@@ -242,7 +619,7 @@ demu_seq_next(void)
 
     case DEMU_SEQ_SHARED_IOPAGE_MAPPED:
         DBG(">SHARED_IOPAGE_MAPPED\n");
-        DBG("iopage = %p\n", demu_state.iopage);
+        DBG("shared_iopage = %p\n", demu_state.shared_iopage);
         break;
 
     case DEMU_SEQ_BUFFERED_IOPAGE_MAPPED:
@@ -265,7 +642,7 @@ demu_seq_next(void)
 
         for (i = 0; i < demu_state.vcpus; i++)
             DBG("VCPU%d: %u -> %u\n", i,
-                demu_state.iopage->vcpu_ioreq[i].vp_eport,
+                demu_state.shared_iopage->vcpu_ioreq[i].vp_eport,
                 demu_state.ioreq_local_port[i]);
 
         break;
@@ -357,7 +734,7 @@ demu_teardown(void)
     if (demu_state.seq >= DEMU_SEQ_SHARED_IOPAGE_MAPPED) {
         DBG("<SHARED_IOPAGE_MAPPED\n");
 
-        munmap(demu_state.iopage, XC_PAGE_SIZE);
+        munmap(demu_state.shared_iopage, XC_PAGE_SIZE);
 
         demu_state.seq = DEMU_SEQ_SERVER_REGISTERED;
     }
@@ -401,12 +778,11 @@ demu_sigusr1(int num)
 
     sigaction(SIGHUP, &sigusr1_handler, NULL);
 
-    pci_config_dump();
+    pci_device_dump();
 }
 
 static int
-demu_initialize(domid_t domid, unsigned int vcpus, unsigned int bus,
-                unsigned int device, unsigned int function)
+demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned int function)
 {
     int             rc;
     xc_dominfo_t    dominfo;
@@ -417,7 +793,6 @@ demu_initialize(domid_t domid, unsigned int vcpus, unsigned int bus,
     int             i;
 
     demu_state.domid = domid;
-    demu_state.vcpus = vcpus;
 
     demu_state.xch = xc_interface_open(NULL, NULL, 0);
     if (demu_state.xch == NULL)
@@ -428,6 +803,10 @@ demu_initialize(domid_t domid, unsigned int vcpus, unsigned int bus,
     rc = xc_domain_getinfo(demu_state.xch, demu_state.domid, 1, &dominfo);
     if (rc < 0 || dominfo.domid != demu_state.domid)
         goto fail2;
+
+    demu_state.vcpus = dominfo.max_vcpu_id + 1;
+
+    DBG("%d vCPU(s)\n", demu_state.vcpus);
 
     rc = xc_hvm_create_ioreq_server(demu_state.xch, demu_state.domid, &demu_state.ioservid);
     if (rc < 0)
@@ -440,12 +819,12 @@ demu_initialize(domid_t domid, unsigned int vcpus, unsigned int bus,
     if (rc < 0)
         goto fail4;
 
-    demu_state.iopage = xc_map_foreign_range(demu_state.xch,
-                                             demu_state.domid,
-                                             XC_PAGE_SIZE,
-                                             PROT_READ | PROT_WRITE,
-                                             pfn);
-    if (demu_state.iopage == NULL)
+    demu_state.shared_iopage = xc_map_foreign_range(demu_state.xch,
+                                                    demu_state.domid,
+                                                    XC_PAGE_SIZE,
+                                                    PROT_READ | PROT_WRITE,
+                                                    pfn);
+    if (demu_state.shared_iopage == NULL)
         goto fail5;
 
     demu_seq_next();
@@ -477,7 +856,7 @@ demu_initialize(domid_t domid, unsigned int vcpus, unsigned int bus,
     demu_seq_next();
 
     for (i = 0; i < demu_state.vcpus; i++) {
-        port = demu_state.iopage->vcpu_ioreq[i].vp_eport;
+        port = demu_state.shared_iopage->vcpu_ioreq[i].vp_eport;
 
         rc = xc_evtchn_bind_interdomain(demu_state.xceh, demu_state.domid,
                                         port);
@@ -498,8 +877,7 @@ demu_initialize(domid_t domid, unsigned int vcpus, unsigned int bus,
 
     demu_seq_next();
 
-    rc = device_initialize(demu_state.xch, demu_state.domid,
-                           demu_state.ioservid, bus, device, function);
+    rc = device_initialize(bus, device, function, 0x01000000);
     if (rc < 0)
         goto fail11;
 
@@ -557,6 +935,7 @@ demu_poll_buffered_iopage(void)
         
         read_pointer = demu_state.buffered_iopage->read_pointer;
         write_pointer = demu_state.buffered_iopage->write_pointer;
+        mb();
 
         if (read_pointer == write_pointer)
             break;
@@ -591,7 +970,7 @@ demu_poll_buffered_iopage(void)
                 read_pointer++;
             }
 
-            handle_ioreq(&ioreq);
+            demu_handle_ioreq(&ioreq);
             mb();
         }
 
@@ -601,23 +980,19 @@ demu_poll_buffered_iopage(void)
 }
 
 static void
-demu_poll_iopage(unsigned int i)
+demu_poll_shared_iopage(unsigned int i)
 {
-    ioreq_t         *ioreq;
+    ioreq_t *ioreq;
 
-    if (demu_state.seq != DEMU_SEQ_INITIALIZED)
+    ioreq = &demu_state.shared_iopage->vcpu_ioreq[i];
+    if (ioreq->state != STATE_IOREQ_READY)
         return;
 
-    ioreq = &demu_state.iopage->vcpu_ioreq[i];
-    if (ioreq->state != STATE_IOREQ_READY) {
-        fprintf(stderr, "IO request not ready\n");
-        return;
-    }
     mb();
 
     ioreq->state = STATE_IOREQ_INPROCESS;
 
-    handle_ioreq(ioreq);
+    demu_handle_ioreq(ioreq);
     mb();
 
     ioreq->state = STATE_IORESP_READY;
@@ -646,7 +1021,7 @@ demu_poll_iopages(void)
         for (i = 0; i < demu_state.vcpus; i++) {
             if (port == demu_state.ioreq_local_port[i]) {
                 xc_evtchn_unmask(demu_state.xceh, port);
-                demu_poll_iopage(i);
+                demu_poll_shared_iopage(i);
             }
         }
     }
@@ -656,17 +1031,11 @@ int
 main(int argc, char **argv, char **envp)
 {
     char            *domain_str;
-    char            *vcpus_str;
-    char            *bus_str;
     char            *device_str;
-    char            *function_str;
     int             index;
     char            *end;
     domid_t         domid;
-    unsigned int    vcpus;
-    unsigned int    bus;
     unsigned int    device;
-    unsigned int    function;
     sigset_t        block;
     struct pollfd   pfd;
     int             rc;
@@ -674,10 +1043,7 @@ main(int argc, char **argv, char **envp)
     prog = basename(argv[0]);
 
     domain_str = NULL;
-    vcpus_str = NULL;
-    bus_str = NULL;
     device_str = NULL;
-    function_str = NULL;
 
     for (;;) {
         char    c;
@@ -694,20 +1060,8 @@ main(int argc, char **argv, char **envp)
             domain_str = optarg;
             break;
 
-        case DEMU_OPT_VCPUS:
-            vcpus_str = optarg;
-            break;
-
-        case DEMU_OPT_BUS:
-            bus_str = optarg;
-            break;
-
         case DEMU_OPT_DEVICE:
             device_str = optarg;
-            break;
-
-        case DEMU_OPT_FUNCTION:
-            function_str = optarg;
             break;
 
         default:
@@ -717,10 +1071,7 @@ main(int argc, char **argv, char **envp)
     }
 
     if (domain_str == NULL ||
-        vcpus_str == NULL ||
-        bus_str == NULL ||
-        device_str == NULL ||
-        function_str == NULL) {
+        device_str == NULL) {
         usage();
         /*NOTREACHED*/
     }
@@ -731,27 +1082,9 @@ main(int argc, char **argv, char **envp)
         exit(1);
     }
 
-    vcpus = (unsigned int)strtol(vcpus_str, &end, 0);
-    if (*end != '\0') {
-        fprintf(stderr, "invalid vcpu count '%s'\n", vcpus_str);
-        exit(1);
-    }
-
-    bus = (unsigned int)strtol(bus_str, &end, 0);
-    if (*end != '\0') {
-        fprintf(stderr, "invalid bus '%s'\n", bus_str);
-        exit(1);
-    }
-
     device = (unsigned int)strtol(device_str, &end, 0);
     if (*end != '\0') {
-        fprintf(stderr, "invalid vcpu count '%s'\n", device_str);
-        exit(1);
-    }
-
-    function = (unsigned int)strtol(function_str, &end, 0);
-    if (*end != '\0') {
-        fprintf(stderr, "invalid vcpu count '%s'\n", function_str);
+        fprintf(stderr, "invalid device '%s'\n", device_str);
         exit(1);
     }
 
@@ -780,7 +1113,7 @@ main(int argc, char **argv, char **envp)
 
     sigprocmask(SIG_BLOCK, &block, NULL);
 
-    rc = demu_initialize(domid, vcpus, bus, device, function);
+    rc = demu_initialize(domid, 0, device, 0);
     if (rc < 0) {
         demu_teardown();
         exit(1);

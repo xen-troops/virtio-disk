@@ -26,43 +26,38 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  */
-#include <linux/pci_regs.h>
 
-#ifndef  _PCI_H
-#define  _PCI_H
+#ifndef  _DEMU_H
+#define  _DEMU_H
 
-#define PCI_NUM_BAR             6
-#define PCI_CONFIG_HEADER_SIZE  0x40
-#define PCI_CONFIG_SIZE         0x100
-#define PCI_BAR_UNMAPPED        (~(0u))
+#define TARGET_PAGE_SHIFT   12
+#define TARGET_PAGE_SIZE    (1 << TARGET_PAGE_SHIFT)
 
-typedef struct pci_info {
-        uint8_t         bus;
-        uint8_t         device:5;
-        uint8_t         function:3;
-        uint16_t        vendor_id;
-        uint16_t        device_id;
-        uint16_t        subvendor_id;
-        uint16_t        subdevice_id;
-        uint8_t         revision;
-        uint8_t         class;
-        uint8_t         subclass;
-        uint8_t         prog_if;
-        uint8_t         header_type;
-        uint16_t        command;
-        uint8_t         interrupt_pin;
-} pci_info_t;
+void    *demu_map_guest_pages(xen_pfn_t pfn[], unsigned int n);
 
-int     pci_device_register( const pci_info_t *info);
-void    pci_device_deregister(void);
+static inline void *demu_map_guest_page(xen_pfn_t pfn)
+{
+	return demu_map_guest_pages(&pfn, 1);
+}
 
-int     pci_bar_register(unsigned int index, uint8_t type, uint64_t size,
-                         void (*map)(void *priv, uint64_t addr),
-                         void (*unmap)(void *priv),
-                         void *priv);
-void    pci_bar_deregister(unsigned int index);
+typedef struct io_ops {
+        uint8_t         (*readb)(void *priv, uint64_t addr);
+        uint16_t        (*readw)(void *priv, uint64_t addr);
+        uint32_t        (*readl)(void *priv, uint64_t addr);
+        void            (*writeb)(void *priv, uint64_t addr, uint8_t val);
+        void            (*writew)(void *priv, uint64_t addr, uint16_t val);
+        void            (*writel)(void *priv, uint64_t addr, uint32_t val);
+} io_ops_t;
 
-void    pci_device_dump(void);
+int demu_register_pci_config_space(uint8_t bus, uint8_t device, uint8_t function,
+                                   const io_ops_t *ops, void *priv);
+int demu_register_port_space(uint64_t start, uint64_t size,
+                             const io_ops_t *ops, void *priv);
+int demu_register_memory_space(uint64_t start, uint64_t size,
+                               const io_ops_t *ops, void *priv);
 
-#endif  /* _PCI_H */
+void demu_deregister_pci_config_space(uint8_t bus, uint8_t device, uint8_t function);
+void demu_deregister_port_space(uint64_t start);
+void demu_deregister_memory_space(uint64_t start);
 
+#endif  /* _DEMU_H */

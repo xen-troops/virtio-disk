@@ -2,6 +2,7 @@ TARGET = demu
 
 OBJS :=	device.o \
 	pci.o \
+	mapcache.o \
 	demu.o
 
 CFLAGS  = -I$(shell pwd)/include
@@ -14,7 +15,7 @@ ifeq ($(shell uname),Linux)
 LDLIBS := -lutil -lrt
 endif
 
-LDLIBS += -lxenstore -lxenctrl
+LDLIBS += -lxenctrl
 
 # Get gcc to generate the dependencies for us.
 CFLAGS   += -Wp,-MD,$(@D)/.$(@F).d
@@ -39,11 +40,6 @@ clean:
 	rm -f $(OBJS)
 	rm -f $(DEPS)
 	rm -f $(TARGET)
-	rm -f TAGS
-
-.PHONY: TAGS
-TAGS:
-	find . -name \*.[ch] | etags -
 
 -include $(DEPS)
 
