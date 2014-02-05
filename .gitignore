@@ -1,0 +1,10 @@
+.hg
+*.orig
+*.rej
+*~
+*.o
+*.d
+TAGS
+tags
+cscope.files
+cscope.out
