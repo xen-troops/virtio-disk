@@ -175,23 +175,213 @@ typedef struct demu_state {
 static demu_state_t demu_state;
 
 void *
-demu_map_guest_pages(xen_pfn_t pfn[], unsigned int n)
+demu_map_guest_pages(xen_pfn_t pfn[], unsigned int n, int populate)
 {
     void *ptr;
+
+    if (populate) {
+        int rc;
+
+        rc = xc_domain_populate_physmap_exact(demu_state.xch, demu_state.domid,
+                                              n, 0, 0, pfn);
+        if (rc < 0)
+            goto fail1;
+    }
 
     ptr = xc_map_foreign_pages(demu_state.xch, demu_state.domid,
                                PROT_READ | PROT_WRITE,
                                pfn, n);
     if (ptr == NULL)
-        goto fail1;
+        goto fail2;
+
+    if (populate)
+        memset(ptr, 0, n * TARGET_PAGE_SIZE);
     
     return ptr;
+
+fail2:
+    DBG("fail2\n");
+
+    if (populate)
+        (void) xc_domain_decrease_reservation(demu_state.xch, demu_state.domid,
+                                              n, 0, pfn);
     
 fail1:
     DBG("fail1\n");
 
     warn("fail");
     return NULL;
+}
+
+void *
+demu_map_guest_range(uint64_t addr, uint64_t size, int populate)
+{
+    xen_pfn_t   *pfn;
+    int         i, n;
+    void        *ptr;
+
+    DBG("%"PRIx64"+%"PRIx64" %s\n", addr, size, (populate) ? "[POPULATE]" : "");
+
+    size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
+
+    n = size >> TARGET_PAGE_SHIFT;
+    pfn = malloc(sizeof (xen_pfn_t) * n);
+
+    if (pfn == NULL)
+        goto fail1;
+
+    for (i = 0; i < n; i++)
+        pfn[i] = (addr >> TARGET_PAGE_SHIFT) + i;
+    
+    ptr = demu_map_guest_pages(pfn, n, populate);
+    if (ptr == NULL)
+        goto fail2;
+    
+    free(pfn);
+    return ptr;
+    
+fail2:
+    DBG("fail2\n");
+    
+    free(pfn);
+    
+fail1:
+    DBG("fail1\n");
+
+    warn("fail");
+    return NULL;
+}
+
+void
+demu_unmap_guest_pages(void *ptr, xen_pfn_t pfn[], unsigned int n, int depopulate)
+{
+    munmap(ptr, TARGET_PAGE_SIZE * n);
+    if (depopulate)
+        (void) xc_domain_decrease_reservation(demu_state.xch, demu_state.domid,
+                                              n, 0, pfn);
+}
+
+int
+demu_unmap_guest_range(void *ptr, uint64_t addr, uint64_t size, int depopulate)
+{
+    xen_pfn_t   *pfn;
+    int         i, n;
+
+    DBG("%"PRIx64"+%"PRIx64" %s\n", addr, size, (depopulate) ? "[DEPOPULATE]" : "");
+
+    size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
+
+    n = size >> TARGET_PAGE_SHIFT;
+    pfn = malloc(sizeof (xen_pfn_t) * n);
+
+    if (pfn == NULL)
+        goto fail1;
+
+    for (i = 0; i < n; i++)
+        pfn[i] = (addr >> TARGET_PAGE_SHIFT) + i;
+    
+    demu_unmap_guest_pages(ptr, pfn, n, depopulate);
+    
+    free(pfn);
+    return 0;
+    
+fail1:
+    DBG("fail1\n");
+
+    warn("fail");
+    return -1;
+}
+
+int
+demu_relocate_guest_pages(xen_pfn_t old[], xen_pfn_t new[], unsigned int n)
+{
+    int i;
+    int rc;
+
+    for (i = 0; i < n; i++) {
+        rc = xc_domain_add_to_physmap(demu_state.xch, demu_state.domid,
+                                      XENMAPSPACE_gmfn, old[i], new[i]);
+        if (rc < 0)
+            goto fail1;
+
+    }
+
+    return 0;
+
+fail1:
+    DBG("fail1\n");
+    
+    warn("fail");
+    return -1;
+}
+
+int
+demu_relocate_guest_range(uint64_t old, uint64_t new, uint64_t size)
+{
+    xen_pfn_t   *old_pfn, *new_pfn;
+    int         i, n;
+    int         rc;
+
+    DBG("%"PRIx64"+%"PRIx64" -> %"PRIx64"\n", old, size, new);
+
+    size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
+
+    n = size >> TARGET_PAGE_SHIFT;
+
+    old_pfn = malloc(sizeof (xen_pfn_t) * n);
+    if (old_pfn == NULL)
+        goto fail1;
+
+    new_pfn = malloc(sizeof (xen_pfn_t) * n);
+    if (new_pfn == NULL)
+        goto fail2;
+
+    for (i = 0; i < n; i++) {
+        old_pfn[i] = (old >> TARGET_PAGE_SHIFT) + i;
+        new_pfn[i] = (new >> TARGET_PAGE_SHIFT) + i;
+    }
+    
+    rc = demu_relocate_guest_pages(old_pfn, new_pfn, n);
+    if (rc < 0)
+        goto fail3;
+    
+    free(new_pfn);
+    free(old_pfn);
+    return 0;
+    
+fail3:
+    DBG("fail3\n");
+    
+    free(new_pfn);
+
+fail2:
+    DBG("fail2\n");
+    
+    free(old_pfn);
+    
+fail1:
+    DBG("fail1\n");
+
+    warn("fail");
+    return -1;
+}
+
+void
+demu_set_guest_dirty_page(xen_pfn_t pfn)
+{
+    (void) xc_hvm_modified_memory(demu_state.xch, demu_state.domid,
+                                  pfn, 1);
+}
+
+void
+demu_track_dirty_vram(xen_pfn_t pfn, int n, unsigned long *bitmap)
+{
+    int rc;
+
+    rc = xc_hvm_track_dirty_vram(demu_state.xch, demu_state.domid,
+                                 pfn, n, bitmap);
+    if (rc < 0 && bitmap != NULL)
+        memset(bitmap, 0, n / 8);
 }
 
 static demu_space_t *

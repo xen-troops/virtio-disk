@@ -32,7 +32,6 @@
 
 int     surface_initialize(void);
 void    surface_refresh(void);
-void    surface_refresh_test(void);
 void    surface_teardown(void);
 
 #endif  /* _SURFACE_H */

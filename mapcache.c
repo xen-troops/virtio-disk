@@ -114,11 +114,11 @@ __mapcache_fault(xen_pfn_t pfn)
             continue;
 
         if (entry->ptr != NULL) {
-            munmap(entry->ptr, TARGET_PAGE_SIZE);
+            demu_unmap_guest_page(entry->ptr, entry->pfn, FALSE);
             entry->ptr = NULL;
         }
 
-        entry->ptr = demu_map_guest_page(pfn);
+        entry->ptr = demu_map_guest_page(pfn, FALSE);
         if (entry->ptr != NULL)
             entry->pfn = pfn;
 
@@ -133,7 +133,7 @@ mapcache_lookup(xen_pfn_t pfn)
     int             faulted;
 
     faulted = 0;
-gain:
+again:
     ptr = __mapcache_lookup(pfn);
     if (ptr == NULL) {
         if (!faulted) {

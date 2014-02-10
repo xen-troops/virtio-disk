@@ -73,8 +73,6 @@
 #include "mapcache.h"
 #include "vga.h"
 
-#define FALSE 0
-
 #define DEBUG_VGA_MEMORY    0
 #define DEBUG_VGA_IO        0
 #define DEBUG_VBE_IO        0
@@ -141,6 +139,8 @@ typedef struct device {
     uint64_t        vram_addr;
     uint64_t        vram_size;
     uint8_t         *vram;
+    int             vram_enabled;
+    unsigned long   *bitmap;
     uint64_t        mmio_addr;
     uint64_t        mmio_size;
     uint64_t        rom_addr;
@@ -534,7 +534,10 @@ static io_ops_t device_vga_port_ops  = {
 static void
 __copy_from_vram(uint64_t addr, uint8_t *dst, uint64_t size)
 {
-    memcpy(dst, &device_state.vram[addr], size);
+    if (device_state.vram != NULL && device_state.vram_enabled)
+        memcpy(dst, &device_state.vram[addr], size);
+    else
+        memset(dst, 0xff, size);
 }
 
 static uint8_t
@@ -607,7 +610,10 @@ device_vga_memory_readb(void *priv, uint64_t addr)
 static void
 __copy_to_vram(uint8_t *src, uint64_t addr, uint64_t size)
 {
-    memcpy(&device_state.vram[addr], src, size);
+    if (device_state.vram != NULL && device_state.vram_enabled) {
+        memcpy(&device_state.vram[addr], src, size);
+        demu_set_guest_dirty_page((device_state.vram_addr + addr) >> TARGET_PAGE_SHIFT);
+    }
 }
 
 static void
@@ -849,6 +855,13 @@ device_vbe_index_write(void *priv, uint16_t val)
 }
 
 static void
+__clear_vram(uint64_t size)
+{
+    if (device_state.vram != NULL && device_state.vram_enabled)
+        memset(device_state.vram, 0, size);
+}
+
+static void
 device_vbe_data_write(void *priv, uint16_t val)
 {
     vga_t   *vga = &device_state.vga;
@@ -914,8 +927,7 @@ device_vbe_data_write(void *priv, uint16_t val)
 
                 /* clear the screen (should be done in BIOS) */
                 if (!(val & VBE_DISPI_NOCLEARMEM)) {
-                    memset(device_state.vram, 0,
-                           vga->vbe_regs[VBE_DISPI_INDEX_YRES] * vga->vbe_line_offset);
+                    __clear_vram(vga->vbe_regs[VBE_DISPI_INDEX_YRES] * vga->vbe_line_offset);
                 }
 
                 /* we initialize the VGA graphic mode (should be done
@@ -1120,31 +1132,6 @@ device_vga_deregister(void)
     demu_deregister_port_space(0x3c0);
 }
 
-static uint8_t
-device_vram_readb(void *priv, uint64_t addr)
-{
-    uint8_t val;
-
-    addr -= device_state.vram_addr;
-
-    __copy_from_vram(addr, &val, 1);
-
-    return val;
-}
-
-static void
-device_vram_writeb(void *priv, uint64_t addr, uint8_t val)
-{
-    addr -= device_state.vram_addr;
-
-    __copy_to_vram(&val, addr, 1);
-}
-
-static io_ops_t device_vram_ops = {
-    .readb = device_vram_readb,
-    .writeb = device_vram_writeb
-};
-
 static void
 device_vram_bar_enable(void *priv, uint64_t addr)
 {
@@ -1152,8 +1139,18 @@ device_vram_bar_enable(void *priv, uint64_t addr)
 
     assert(priv == NULL);
 
+    DBG("%"PRIx64"\n", addr);
+
+    if (device_state.vram_addr == 0)
+        device_state.vram = demu_map_guest_range(addr,
+                                                 device_state.vram_size,
+                                                 TRUE);
+    else if (addr != device_state.vram_addr)
+        (void) demu_relocate_guest_range(device_state.vram_addr,
+                                         addr,
+                                         device_state.vram_size);
     device_state.vram_addr = addr;
-    DBG("%"PRIx64"\n", device_state.vram_addr);
+    device_state.vram_enabled = TRUE;
 
     vga->lfb_addr = device_state.vram_addr;
     vga->lfb_size = device_state.vram_size;
@@ -1161,11 +1158,6 @@ device_vram_bar_enable(void *priv, uint64_t addr)
     vga->vbe_regs[VBE_DISPI_INDEX_LFB_ADDRESS_H] = vga->lfb_addr >> 16;
     vga->vbe_regs[VBE_DISPI_INDEX_LFB_ADDRESS_L] = vga->lfb_addr & 0xFFFF;
     vga->vbe_regs[VBE_DISPI_INDEX_VIDEO_MEMORY_64K] = vga->lfb_size >> 16;
-
-    (void) demu_register_memory_space(device_state.vram_addr,
-                                      device_state.vram_size,
-                                      &device_vram_ops,
-                                      NULL);
 }
 
 static void
@@ -1175,7 +1167,8 @@ device_vram_bar_disable(void *priv)
 
     DBG("%"PRIx64"\n", device_state.vram_addr);
 
-    demu_deregister_memory_space(device_state.vram_addr);
+    demu_track_dirty_vram(0, 0, NULL);
+    device_state.vram_enabled = FALSE;
 }
 
 #define PCI_VGA_OFFSET  0x400
@@ -1320,9 +1313,9 @@ device_initialize(unsigned int bus, unsigned int device, unsigned int function,
     int         rc;
 
     device_state.vram_size = vram_size;
-    device_state.vram = malloc(vram_size);
 
-    if (device_state.vram == NULL)
+    device_state.bitmap = (unsigned long *)malloc(vram_size >> TARGET_PAGE_SHIFT);
+    if (device_state.bitmap == NULL)
         goto fail1;
 
     device_vga_reset();
@@ -1456,7 +1449,7 @@ fail3:
 fail2:
     DBG("fail2\n");
 
-    free(device_state.vram);
+    free(device_state.bitmap);
 
 fail1:
     DBG("fail1\n");
@@ -1465,19 +1458,44 @@ fail1:
     return -1;
 }
 
-uint8_t *device_get_vram(void)
+uint8_t *
+device_get_vram(void)
 {
 	return device_state.vram;
 }
 
-vga_t *device_get_vga(void)
+vga_t *
+device_get_vga(void)
 {
 	return &device_state.vga;
 }
 
-int device_vram_dirty(uint64_t addr, uint64_t size)
+void
+device_vram_get_dirty_map(int enable)
 {
-    return 1;
+    if (enable && device_state.vram_enabled)
+        demu_track_dirty_vram(device_state.vram_addr >> TARGET_PAGE_SHIFT,
+                              device_state.vram_size >> TARGET_PAGE_SHIFT,
+                              device_state.bitmap);
+    else
+        demu_track_dirty_vram(0, 0, NULL);
+}
+
+int
+device_vram_is_dirty(uint64_t addr, uint64_t size)
+{
+    xen_pfn_t   pfn = addr >> TARGET_PAGE_SHIFT;
+    int         n = size >> TARGET_PAGE_SHIFT;
+    int         dirty;
+
+    dirty = FALSE;
+    while (--n >= 0) {
+        dirty |= !!(device_state.bitmap[pfn / sizeof(unsigned long) * 8] &
+                    (1ul << (pfn % sizeof(unsigned long) * 8)));
+        pfn++;
+    }
+
+    return dirty;
 }
 
 void
@@ -1493,7 +1511,7 @@ device_teardown(void)
     pci_bar_deregister(0);
     pci_device_deregister();
     device_vga_deregister();
-    free(device_state.vram);
+    free(device_state.bitmap);
 }
 
 /*

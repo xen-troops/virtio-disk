@@ -38,7 +38,9 @@ void    device_teardown(void);
 
 uint8_t *device_get_vram(void);
 vga_t   *device_get_vga(void);
-int     device_vram_dirty(uint64_t addr, uint64_t size);
+
+void    device_vram_get_dirty_map(int enable);
+int     device_vram_is_dirty(uint64_t addr, uint64_t size);
 
 #endif  /* _DEVICE_H */
 

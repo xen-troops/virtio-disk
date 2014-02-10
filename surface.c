@@ -80,9 +80,7 @@
 #define VGA_MAX_HEIGHT 2048
 
 typedef struct surface {
-    uint8_t             *vram;
     uint8_t             *framebuffer;
-    vga_t               *vga;
     uint32_t            font_offsets[2];
     int                 graphic_mode;
     uint8_t             shift_control;
@@ -116,56 +114,56 @@ static uint8_t      expand4to8[16];
 
 static uint8_t get_ar_index(surface_t *s)
 {
-    vga_t   *vga = s->vga;
+    vga_t   *vga = device_get_vga();
 
     return vga->ar_index;
 }
 
 static uint8_t get_ar(surface_t *s, int reg)
 {
-    vga_t   *vga = s->vga;
+    vga_t   *vga = device_get_vga();
 
     return vga->ar[reg];
 }
 
 static uint8_t get_cr(surface_t *s, int reg)
 {
-    vga_t   *vga = s->vga;
+    vga_t   *vga = device_get_vga();
 
     return vga->cr[reg];
 }
 
 static uint8_t get_sr(surface_t *s, int reg)
 {
-    vga_t   *vga = s->vga;
+    vga_t   *vga = device_get_vga();
 
     return vga->sr[reg];
 }
 
 static uint8_t get_gr(surface_t *s, int reg)
 {
-    vga_t   *vga = s->vga;
+    vga_t   *vga = device_get_vga();
 
     return vga->gr[reg];
 }
 
 static uint8_t get_palette(surface_t *s, int offset)
 {
-    vga_t   *vga = s->vga;
+    vga_t   *vga = device_get_vga();
 
     return vga->palette[offset];
 }
 
 static int is_dac_8bit(surface_t *s)
 {
-    vga_t   *vga = s->vga;
+    vga_t   *vga = device_get_vga();
 
     return !!vga->dac_8bit;
 }
 
 static int test_and_clear_plane2(surface_t *s)
 {
-    vga_t   *vga = s->vga;
+    vga_t   *vga = device_get_vga();
     uint32_t val;
 
     val = vga->plane_updated & (1 << 2);
@@ -177,21 +175,21 @@ static int test_and_clear_plane2(surface_t *s)
 
 static uint16_t get_vbe_regs(surface_t *s, int reg)
 {
-    vga_t   *vga = s->vga;
+    vga_t   *vga = device_get_vga();
 
     return vga->vbe_regs[reg];
 }
 
 static uint32_t get_vbe_start_addr(surface_t *s)
 {
-    vga_t   *vga = s->vga;
+    vga_t   *vga = device_get_vga();
 
     return vga->vbe_start_addr;
 }
 
 static uint32_t get_vbe_line_offset(surface_t *s)
 {
-    vga_t   *vga = s->vga;
+    vga_t   *vga = device_get_vga();
 
     return vga->vbe_line_offset;
 }
@@ -539,8 +537,6 @@ surface_initialize(void)
     }
 
     surface_state.graphic_mode = -1;
-    surface_state.vram = device_get_vram();
-    surface_state.vga = device_get_vga();
 
     return 0;
 }
@@ -564,6 +560,11 @@ surface_draw_text(surface_t *s, int full_update)
     uint32_t *ch_attr_ptr;
     vga_draw_glyph8_func *__vga_draw_glyph8;
     vga_draw_glyph9_func *__vga_draw_glyph9;
+    uint8_t *vram = device_get_vram();
+
+    assert(vram != NULL);
+
+    device_vram_get_dirty_map(FALSE);
 
     /* compute font data address (in plane 2) */
     v = get_sr(s, 3);
@@ -572,10 +573,10 @@ surface_draw_text(surface_t *s, int full_update)
         s->font_offsets[0] = offset;
         full_update = 1;
     }
-    font_base[0] = s->vram + offset;
+    font_base[0] = vram + offset;
 
     offset = (((v >> 5) & 1) | ((v >> 1) & 6)) * 8192 * 4 + 2;
-    font_base[1] = s->vram + offset;
+    font_base[1] = vram + offset;
     if (offset != s->font_offsets[1]) {
         s->font_offsets[1] = offset;
         full_update = 1;
@@ -590,7 +591,7 @@ surface_draw_text(surface_t *s, int full_update)
     full_update |= update_basic_params(s);
 
     line_offset = s->line_offset;
-    s1 = s->vram + (s->start_addr * 4);
+    s1 = vram + (s->start_addr * 4);
 
     /* total width & height */
     cheight = (get_cr(s, 9) & 0x1f) + 1;
@@ -647,7 +648,7 @@ surface_draw_text(surface_t *s, int full_update)
         s->cursor_start = get_cr(s, 0xa);
         s->cursor_end = get_cr(s, 0xb);
     }
-    cursor_ptr = s->vram + (s->start_addr + cursor_offset) * 4;
+    cursor_ptr = vram + (s->start_addr + cursor_offset) * 4;
 
     if (cw == 16)
         __vga_draw_glyph8 = vga_draw_glyph16;
@@ -727,6 +728,9 @@ surface_draw_graphic(surface_t *s, int full_update)
     uint8_t *d;
     uint32_t v, addr1, addr;
     vga_draw_line_func *__vga_draw_line;
+    uint8_t *vram = device_get_vram();
+
+    assert(vram != NULL);
 
     full_update |= update_basic_params(s);
 
@@ -839,6 +843,8 @@ surface_draw_graphic(surface_t *s, int full_update)
     linesize = s->linesize;
     y1 = 0;
 
+    device_vram_get_dirty_map(TRUE);
+
     for(y = 0; y < height; y++) {
         addr = addr1;
         if (!(get_cr(s, 0x17) & 1)) {
@@ -850,7 +856,7 @@ surface_draw_graphic(surface_t *s, int full_update)
         if (!(get_cr(s, 0x17) & 2)) {
             addr = (addr & ~0x8000) | ((y1 & 2) << 14);
         }
-        update = full_update | device_vram_dirty(addr, bwidth);
+        update = full_update | device_vram_is_dirty(addr, bwidth);
         /* explicit invalidation for the hardware cursor */
         update |= (s->invalidated_y_table[y >> 5] >> (y & 0x1f)) & 1;
         if (update) {
@@ -860,7 +866,7 @@ surface_draw_graphic(surface_t *s, int full_update)
                 y_start = y;
 
             plane_enable = get_ar(s, 0x12) & 0xf;
-            __vga_draw_line(s->last_palette, plane_enable, d, s->vram + addr, width);
+            __vga_draw_line(s->last_palette, plane_enable, d, vram + addr, width);
         } else {
             if (y_start >= 0) {
                 /* flush to display */
@@ -898,6 +904,8 @@ surface_draw_blank(surface_t *s, int full_update)
 {
     int val;
 
+    device_vram_get_dirty_map(FALSE);
+
     if (!full_update)
         return;
 
@@ -920,8 +928,9 @@ surface_refresh(void)
     surface_t *s = &surface_state;
     int full_update;
     int graphic_mode;
+    uint8_t *vram = device_get_vram();
 
-    if (!(get_ar_index(s) & 0x20)) {
+    if (!(get_ar_index(s) & 0x20) || vram == NULL) {
         graphic_mode = GMODE_BLANK;
     } else {
         graphic_mode = get_gr(s, 6) & 1;
@@ -959,37 +968,6 @@ surface_refresh(void)
         break;
     }
 
-}
-
-void
-surface_refresh_test(void)
-{
-    surface_t       *s = &surface_state;
-    uint32_t        pixel;
-    static uint8_t  val;
-
-    if (s->last_scr_width != 640 ||
-        s->last_scr_height != 480 ||
-        s->last_depth != 32) {
-        surface_resize(640, 480);
-
-        s->last_width = 640;
-        s->last_height = 480;
-        s->last_depth = 32;
-    }
-
-    for (pixel = 0;
-         pixel < s->last_scr_width * s->last_scr_height * 4;
-         pixel += 4) {
-        s->framebuffer[pixel] = val;
-        s->framebuffer[pixel + 1] = val;
-        s->framebuffer[pixel + 2] = val;
-    }
-
-    surface_update(0, 0,
-                   s->last_scr_width, s->last_scr_height);
-
-    val++;
 }
 
 void
