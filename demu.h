@@ -1,5 +1,5 @@
 /*  
- * Copyright (c) 2012, Citrix Systems Inc.
+ * Copyright (c) 2014, Citrix Systems Inc.
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -27,11 +27,15 @@
  *
  */
 
+#include <xenctrl.h>
+
 #ifndef  _DEMU_H
 #define  _DEMU_H
 
 #define TARGET_PAGE_SHIFT   12
 #define TARGET_PAGE_SIZE    (1 << TARGET_PAGE_SHIFT)
+
+#define	P2ROUNDUP(_x, _a) -(-(_x) & -(_a))
 
 void    *demu_map_guest_pages(xen_pfn_t pfn[], unsigned int n);
 
@@ -60,4 +64,20 @@ void demu_deregister_pci_config_space(uint8_t bus, uint8_t device, uint8_t funct
 void demu_deregister_port_space(uint64_t start);
 void demu_deregister_memory_space(uint64_t start);
 
+
+void    demu_new_framebuffer(uint32_t width, uint32_t height, uint32_t depth);
+uint8_t *demu_get_framebuffer(void);
+void    demu_update_framebuffer(uint32_t x, uint32_t y, uint32_t width, uint32_t height);
+
 #endif  /* _DEMU_H */
+
+/*
+ * Local variables:
+ * mode: C
+ * c-file-style: "BSD"
+ * c-basic-offset: 4
+ * c-tab-always-indent: nil
+ * tab-width: 4
+ * indent-tabs-mode: nil
+ * End:
+ */

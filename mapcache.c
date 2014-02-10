@@ -1,5 +1,5 @@
 /*  
- * Copyright (c) 2012, Citrix Systems Inc.
+ * Copyright (c) 2014, Citrix Systems Inc.
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include <inttypes.h>
 
 #include <sys/types.h>
 #include <sys/mman.h>
@@ -90,7 +91,7 @@ __mapcache_fault(xen_pfn_t pfn)
     int         i;
     uint64_t    oldest_epoch;
 
-    DBG("%llx\n", (unsigned long long)pfn);
+    DBG("%"PRIx64"\n", pfn);
 
     bucket = pfn % MAPCACHE_BUCKET_COUNT;
 
@@ -126,18 +127,13 @@ __mapcache_fault(xen_pfn_t pfn)
 }
 
 uint8_t *
-mapcache_lookup(uint64_t addr)
+mapcache_lookup(xen_pfn_t pfn)
 {
-    xen_pfn_t       pfn;
-    unsigned int    offset;
     uint8_t         *ptr;
     int             faulted;
 
-    pfn = addr >> TARGET_PAGE_SHIFT;
-    offset = addr & (TARGET_PAGE_SIZE - 1);
-
     faulted = 0;
-again:
+gain:
     ptr = __mapcache_lookup(pfn);
     if (ptr == NULL) {
         if (!faulted) {
@@ -148,7 +144,6 @@ again:
         goto fail1;
     }
 
-    ptr += offset;
     return ptr;
 
 fail1:
@@ -162,6 +157,8 @@ mapcache_invalidate(void)
 {
     int i;
 
+    DBG("\n");
+
     for (i = 0; i < MAPCACHE_BUCKET_SIZE * MAPCACHE_BUCKET_COUNT; i++) {
         mapcache_entry_t *entry = &mapcache[i];
 
@@ -171,3 +168,14 @@ mapcache_invalidate(void)
         }
     }
 }
+
+/*
+ * Local variables:
+ * mode: C
+ * c-file-style: "BSD"
+ * c-basic-offset: 4
+ * c-tab-always-indent: nil
+ * tab-width: 4
+ * indent-tabs-mode: nil
+ * End:
+ */

@@ -3,6 +3,7 @@ TARGET = demu
 OBJS :=	device.o \
 	pci.o \
 	mapcache.o \
+	surface.o \
 	demu.o
 
 CFLAGS  = -I$(shell pwd)/include
@@ -15,7 +16,7 @@ ifeq ($(shell uname),Linux)
 LDLIBS := -lutil -lrt
 endif
 
-LDLIBS += -lxenctrl -lvncserver
+LDLIBS += -lxenctrl -lvncserver  -lnsl -lpthread -lz -ljpeg -lresolv -L/lib/x86_64-linux-gnu -lgcrypt -lgnutls
 
 # Get gcc to generate the dependencies for us.
 CFLAGS   += -Wp,-MD,$(@D)/.$(@F).d

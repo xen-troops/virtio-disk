@@ -1,5 +1,5 @@
 /*  
- * Copyright (c) 2012, Citrix Systems Inc.
+ * Copyright (c) 2014, Citrix Systems Inc.
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -89,21 +89,38 @@ static void
 pci_bar_update(unsigned int index)
 {
     pci_bar_t	*bar = &pci_state.bar[index];
-    uint32_t 	addr = *(uint32_t *)&pci_state.config[PCI_BASE_ADDRESS_0 + (index * 4)];
     uint16_t 	cmd = *(uint16_t *)&pci_state.config[PCI_COMMAND];
-    uint32_t 	mask = ~(bar->size - 1);
+    uint8_t     offset;
+    uint32_t 	addr;
+    uint32_t 	mask;
 
     if (bar->size == 0)
         return;
 
-    if (bar->is_mmio)
-        addr &= PCI_BASE_ADDRESS_MEM_MASK;
+    if (index == PCI_ROM_SLOT)
+	    offset = PCI_ROM_ADDRESS;
     else
-        addr &= PCI_BASE_ADDRESS_IO_MASK;
+	    offset = PCI_BASE_ADDRESS_0 + (index * 4);
+
+    addr = *(uint32_t *)&pci_state.config[offset];
+    mask = *(uint32_t *)&pci_state.mask[offset];
+
+    if (index == PCI_ROM_SLOT) {
+	    addr &= PCI_ROM_ADDRESS_MASK;
+	    mask &= PCI_ROM_ADDRESS_MASK;
+    } else {
+	    if (bar->is_mmio) {
+		    addr &= PCI_BASE_ADDRESS_MEM_MASK;
+		    mask &= PCI_BASE_ADDRESS_MEM_MASK;
+	    } else {
+		    addr &= PCI_BASE_ADDRESS_IO_MASK;
+		    mask &= PCI_BASE_ADDRESS_IO_MASK;
+	    }
+    }
 
     if ((!(cmd & PCI_COMMAND_IO) && !bar->is_mmio)
         || (!(cmd & PCI_COMMAND_MEMORY) && bar->is_mmio))
-        addr = PCI_BAR_UNMAPPED;
+	    addr = PCI_BAR_UNMAPPED;
 
     if (addr == 0 || addr == mask)
         addr = PCI_BAR_UNMAPPED;
@@ -117,6 +134,7 @@ pci_bar_update(unsigned int index)
     }
 
     if (addr != PCI_BAR_UNMAPPED) {
+	    assert(bar->addr == PCI_BAR_UNMAPPED);
         bar->addr = addr;
         pci_bar_enable(index);
     }
@@ -164,16 +182,21 @@ pci_device_dump(void)
 {
     int	i;
 
-    fprintf(stderr, "    3  2  1  0\n");
-    fprintf(stderr, "--------------\n");
+    fprintf(stderr, "      VALUE      |  MASK        \n");
+    fprintf(stderr, "      3  2  1  0 |  3  2  1  0  \n");
+    fprintf(stderr, "-----------------|--------------\n");
 
     for (i = 0; i < PCI_CONFIG_HEADER_SIZE; i += 4) {
-        fprintf(stderr, "%02x |%02x %02x %02x %02x\n",
+        fprintf(stderr, "%02x | %02x %02x %02x %02x | %02x %02x %02x %02x\n",
                 i,
                 pci_state.config[i + 3],
                 pci_state.config[i + 2],
                 pci_state.config[i + 1],
-                pci_state.config[i ]);
+                pci_state.config[i ],
+                pci_state.mask[i + 3],
+                pci_state.mask[i + 2],
+                pci_state.mask[i + 1],
+                pci_state.mask[i ]);
     }
 }
 
@@ -242,6 +265,8 @@ pci_bar_register(unsigned int index, uint8_t type, uint64_t size,
                  void *priv)
 {
     pci_bar_t	*bar;
+    uint32_t    mask;
+    uint8_t     offset;
 
     DBG("%d: %"PRIx64"\n", index, size);
 
@@ -261,8 +286,17 @@ pci_bar_register(unsigned int index, uint8_t type, uint64_t size,
     bar->addr = PCI_BAR_UNMAPPED;
     bar->size = size;
 
-    *(uint32_t *)&pci_state.config[PCI_BASE_ADDRESS_0 + (index * 4)] = type;
-    *(uint32_t *)&pci_state.mask[PCI_BASE_ADDRESS_0 + (index * 4)] = ~(bar->size - 1);
+    mask = ~(bar->size - 1);
+
+    if (index == PCI_ROM_SLOT) {
+	    offset = PCI_ROM_ADDRESS;
+	    mask |= PCI_ROM_ADDRESS_ENABLE;
+    } else {
+	    offset = PCI_BASE_ADDRESS_0 + (index * 4);
+    }
+
+    *(uint32_t *)&pci_state.config[offset] = type;
+    *(uint32_t *)&pci_state.mask[offset] = mask;
 
     return 0;
 
@@ -290,3 +324,16 @@ pci_bar_deregister(unsigned int index)
     bar->disable(bar->priv);
     bar->size = 0;
 }
+
+/*
+ * Local variables:
+ * mode: C
+ * c-tab-always-indent: nil
+ * c-file-style: "BSD"
+ * c-basic-offset: 4
+ * c-basic-indent: 4
+ * tab-width: 4
+ * indent-tabs-mode: nil
+ * End:
+ */
+

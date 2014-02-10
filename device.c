@@ -1,5 +1,5 @@
 /*  
- * Copyright (c) 2012, Citrix Systems Inc.
+ * Copyright (c) 2014, Citrix Systems Inc.
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -26,14 +26,42 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  */
+
+/*
+ * Copyright (c) 2003 Fabrice Bellard
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+
 #include <err.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <fcntl.h>
 #include <string.h>
 #include <assert.h>
+#include <inttypes.h>
+#include <unistd.h>
+#include <errno.h>
 
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/mman.h>
 
 #include <xenctrl.h>
@@ -47,7 +75,9 @@
 
 #define FALSE 0
 
-#define DEBUG_VGA_MEMORY 0
+#define DEBUG_VGA_MEMORY    0
+#define DEBUG_VGA_IO        0
+#define DEBUG_VBE_IO        0
 
 /* force some bits to zero */
 static const uint8_t __sr_mask[8] = {
@@ -106,9 +136,16 @@ static const uint32_t mask16[16] = {
 #undef PAT
 
 typedef struct device {
+    vga_t           vga;
+    int             fd;
+    uint64_t        vram_addr;
     uint64_t        vram_size;
     uint8_t         *vram;
-    vga_t           vga;
+    uint64_t        mmio_addr;
+    uint64_t        mmio_size;
+    uint64_t        rom_addr;
+    uint64_t        rom_size;
+    uint8_t         *rom;
 } device_t;
 
 static  device_t   device_state;
@@ -365,6 +402,10 @@ device_vga_port_readb(void *priv, uint64_t addr)
         }
     }
 
+#if  DEBUG_VGA_IO
+    DBG("[0x%"PRIx64"] -> 0x%02x\n", addr, val);
+#endif
+
     return val;
 }
 
@@ -375,6 +416,10 @@ device_vga_port_writeb(void *priv, uint64_t addr, uint8_t val)
     uint8_t index;
 
     assert(priv == NULL);
+
+#if  DEBUG_VGA_IO
+    DBG("[0x%"PRIx64"] <- 0x%02x\n", addr, val);
+#endif
 
     /* check port range access depending on color/monochrome mode */
     if ((addr >= 0x3b0 && addr <= 0x3bf && (vga->msr & MSR_COLOR_EMULATION)) ||
@@ -552,6 +597,10 @@ device_vga_memory_readb(void *priv, uint64_t addr)
         }
     }
 
+#if  DEBUG_VGA_MEMORY
+    DBG("[0x%"PRIx64"] -> 0x%02x\n", addr, val);
+#endif
+
     return val;
 }
 
@@ -572,7 +621,7 @@ device_vga_memory_writeb(void *priv, uint64_t addr, uint8_t val)
     assert(priv == NULL);
 
 #if  DEBUG_VGA_MEMORY
-    DBG("[0x%llx] = 0x%02x\n", addr, val);
+    DBG("[0x%"PRIx64"] <- 0x%02x\n", addr, val);
 #endif
 
     /* convert to VGA memory offset */
@@ -607,7 +656,7 @@ device_vga_memory_writeb(void *priv, uint64_t addr, uint8_t val)
         if (vga->sr[2] & mask) {
             __copy_to_vram(&val, addr, 1);
 #if  DEBUG_VGA_MEMORY
-            DBG("chain4: [0x%llx] val=0x%02x\n", addr, val);
+            DBG("chain4: [0x%"PRIx64"] val=0x%02x\n", addr, val);
 #endif
             vga->plane_updated |= mask; /* only used to detect font change */
 
@@ -620,7 +669,7 @@ device_vga_memory_writeb(void *priv, uint64_t addr, uint8_t val)
             addr = ((addr & ~1) << 1) | plane;
             __copy_to_vram(&val, addr, 1);
 #if  DEBUG_VGA_MEMORY
-            DBG("odd/even: [0x%llx] val=0x%02x\n", addr, val);
+            DBG("odd/even: [0x%"PRIx64"] val=0x%02x\n", addr, val);
 #endif
             vga->plane_updated |= mask; /* only used to detect font change */
         }
@@ -707,7 +756,7 @@ device_vga_memory_writeb(void *priv, uint64_t addr, uint8_t val)
         __copy_to_vram((uint8_t *)&tmp, addr << 2, 4);
 
 #if  DEBUG_VGA_MEMORY
-        DBG("latch: [0x%llx] val=0x%08x\n", addr << 2, tmp);
+        DBG("latch: [0x%"PRIx64"] val=0x%08x\n", addr << 2, tmp);
 #endif
 
     }
@@ -781,6 +830,10 @@ device_vbe_port_readw(void *priv, uint64_t addr)
         val = 0xff;
         break;
     }
+
+#if  DEBUG_VBE_IO
+    DBG("[0x%"PRIx64"] -> 0x%04x\n", addr, val);
+#endif
 
     return val;
 }
@@ -943,6 +996,10 @@ device_vbe_port_writew(void *priv, uint64_t addr, uint16_t val)
 {
     assert(priv == NULL);
 
+#if  DEBUG_VBE_IO
+    DBG("[0x%"PRIx64"] <- 0x%04x\n", addr, val);
+#endif
+
     switch (addr) {
     case 0x1ce:
     case 0xff80:
@@ -1064,64 +1121,202 @@ device_vga_deregister(void)
 }
 
 static uint8_t
-device_bar_readb(void *priv, uint64_t addr)
+device_vram_readb(void *priv, uint64_t addr)
 {
-    vga_t   *vga = &device_state.vga;
     uint8_t val;
 
-    __copy_from_vram(addr - vga->lfb_addr, &val, 1);
+    addr -= device_state.vram_addr;
+
+    __copy_from_vram(addr, &val, 1);
 
     return val;
 }
 
 static void
-device_bar_writeb(void *priv, uint64_t addr, uint8_t val)
+device_vram_writeb(void *priv, uint64_t addr, uint8_t val)
 {
-    vga_t   *vga = &device_state.vga;
+    addr -= device_state.vram_addr;
 
-    __copy_to_vram(&val, addr - vga->lfb_addr, 1);
+    __copy_to_vram(&val, addr, 1);
 }
 
-static io_ops_t device_bar_ops = {
-    .readb = device_bar_readb,
-    .writeb = device_bar_writeb
+static io_ops_t device_vram_ops = {
+    .readb = device_vram_readb,
+    .writeb = device_vram_writeb
 };
 
 static void
-device_bar_enable(void *priv, uint64_t addr)
+device_vram_bar_enable(void *priv, uint64_t addr)
 {
     vga_t   *vga = &device_state.vga;
-    int     rc;
 
     assert(priv == NULL);
 
-    vga->lfb_addr = addr;
+    device_state.vram_addr = addr;
+    DBG("%"PRIx64"\n", device_state.vram_addr);
+
+    vga->lfb_addr = device_state.vram_addr;
     vga->lfb_size = device_state.vram_size;
 
     vga->vbe_regs[VBE_DISPI_INDEX_LFB_ADDRESS_H] = vga->lfb_addr >> 16;
     vga->vbe_regs[VBE_DISPI_INDEX_LFB_ADDRESS_L] = vga->lfb_addr & 0xFFFF;
     vga->vbe_regs[VBE_DISPI_INDEX_VIDEO_MEMORY_64K] = vga->lfb_size >> 16;
 
-    rc = demu_register_memory_space(vga->lfb_addr, vga->lfb_size,
-                                    &device_bar_ops, NULL);
-    assert(rc == 0);
+    (void) demu_register_memory_space(device_state.vram_addr,
+                                      device_state.vram_size,
+                                      &device_vram_ops,
+                                      NULL);
 }
 
 static void
-device_bar_disable(void *priv)
+device_vram_bar_disable(void *priv)
 {
-    vga_t   *vga = &device_state.vga;
-
     assert(priv == FALSE);
 
-    demu_deregister_memory_space(vga->lfb_addr);
+    DBG("%"PRIx64"\n", device_state.vram_addr);
+
+    demu_deregister_memory_space(device_state.vram_addr);
+}
+
+#define PCI_VGA_OFFSET  0x400
+#define PCI_VGA_SIZE    (0x3e0 - 0x3c0)
+#define PCI_VBE_OFFSET  0x500
+#define PCI_VBE_SIZE    (0x0b * 2)
+#define MMIO_SIZE       0x1000
+
+static uint8_t
+device_pci_vga_readb(void *priv, uint64_t addr)
+{
+    addr -= device_state.mmio_addr + PCI_VGA_OFFSET;
+
+    return device_vga_port_readb(priv, addr + 0x3c0);
+}
+
+static void
+device_pci_vga_writeb(void *priv, uint64_t addr, uint8_t val)
+{
+    addr -= device_state.mmio_addr + PCI_VGA_OFFSET;
+
+    device_vga_port_writeb(priv, addr + 0x3c0, val);
+}
+
+static io_ops_t device_pci_vga_ops = {
+    .readb = device_pci_vga_readb,
+    .writeb = device_pci_vga_writeb
+};
+
+static uint16_t
+device_pci_vbe_readw(void *priv, uint64_t addr)
+{
+    addr -= device_state.mmio_addr + PCI_VBE_OFFSET;
+
+    device_vbe_index_write(priv, addr >> 1);
+    return device_vbe_data_read(priv);
+}
+
+static void
+device_pci_vbe_writew(void *priv, uint64_t addr, uint16_t val)
+{
+    addr -= device_state.mmio_addr + PCI_VBE_OFFSET;
+
+    device_vbe_index_write(priv, addr >> 1);
+    device_vbe_data_write(priv, val);
+}
+
+static io_ops_t device_pci_vbe_ops = {
+    .readw = device_pci_vbe_readw,
+    .writew = device_pci_vbe_writew
+};
+
+static void
+device_mmio_bar_enable(void *priv, uint64_t addr)
+{
+    assert(priv == NULL);
+
+    device_state.mmio_addr = addr;
+    DBG("%"PRIx64"\n", device_state.mmio_addr);
+
+    (void) demu_register_memory_space(device_state.mmio_addr + PCI_VGA_OFFSET,
+                                      PCI_VGA_SIZE,
+                                      &device_pci_vga_ops,
+                                      NULL);
+
+    (void)demu_register_memory_space(device_state.mmio_addr + PCI_VBE_OFFSET,
+                                     PCI_VBE_SIZE,
+                                     &device_pci_vbe_ops,
+                                     NULL);
+}
+
+static void
+device_mmio_bar_disable(void *priv)
+{
+    assert(priv == FALSE);
+
+    DBG("%"PRIx64"\n", device_state.mmio_addr);
+
+    demu_deregister_memory_space(device_state.mmio_addr + PCI_VGA_OFFSET);
+    demu_deregister_memory_space(device_state.mmio_addr + PCI_VBE_OFFSET);
+}
+
+static void
+__copy_from_rom(uint64_t addr, uint8_t *dst, uint64_t size)
+{
+    memcpy(dst, &device_state.rom[addr], size);
+}
+
+static uint8_t
+device_rom_readb(void *priv, uint64_t addr)
+{
+    uint8_t val;
+
+    addr -= device_state.rom_addr;
+
+    __copy_from_rom(addr, &val, 1);
+
+    return val;
+}
+
+static void
+device_rom_writeb(void *priv, uint64_t addr, uint8_t val)
+{
+    DBG("%"PRIx64" <- %02x\n", addr, val);
+}
+
+static io_ops_t device_rom_bar_ops = {
+    .readb = device_rom_readb,
+    .writeb = device_rom_writeb
+};
+
+static void
+device_rom_bar_enable(void *priv, uint64_t addr)
+{
+    assert(priv == NULL);
+
+    device_state.rom_addr = addr;
+    DBG("%"PRIx64"\n", device_state.rom_addr);
+
+    (void) demu_register_memory_space(device_state.rom_addr,
+                                      device_state.rom_size,
+                                      &device_rom_bar_ops,
+                                      NULL);
+}
+
+static void
+device_rom_bar_disable(void *priv)
+{
+    assert(priv == FALSE);
+
+    DBG("%"PRIx64"\n", device_state.rom_addr);
+
+    demu_deregister_memory_space(device_state.rom_addr);
 }
 
 int
 device_initialize(unsigned int bus, unsigned int device, unsigned int function,
-                  uint64_t vram_size)
+                  uint64_t vram_size, char *romfile)
 {
     pci_info_t  info;
+    struct stat st;
     int         rc;
 
     device_state.vram_size = vram_size;
@@ -1159,13 +1354,94 @@ device_initialize(unsigned int bus, unsigned int device, unsigned int function,
     rc = pci_bar_register(0,
                           PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_PREFETCH,
                           device_state.vram_size,
-                          device_bar_enable,
-                          device_bar_disable,
+                          device_vram_bar_enable,
+                          device_vram_bar_disable,
                           NULL);
     if (rc < 0)
         goto fail4;
 
+    device_state.mmio_size = MMIO_SIZE;
+
+    rc = pci_bar_register(2,
+                          PCI_BASE_ADDRESS_SPACE_MEMORY,
+                          device_state.mmio_size,
+                          device_mmio_bar_enable,
+                          device_mmio_bar_disable,
+                          NULL);
+    if (rc < 0)
+        goto fail5;
+
+    device_state.fd = -1;
+
+    if (romfile == NULL)
+        goto done;
+
+    device_state.fd = open(romfile, O_RDONLY);
+    if (device_state.fd < 0)
+        goto fail6;
+
+    rc = fstat(device_state.fd, &st);
+    if (rc < 0)
+        goto fail7;
+
+    device_state.rom_size = P2ROUNDUP(st.st_size, TARGET_PAGE_SIZE);
+
+    DBG("ROM: %s (%"PRIu64"k)\n", romfile, device_state.rom_size / 4);
+
+    device_state.rom = mmap(NULL,
+                            device_state.rom_size,
+                            PROT_READ,
+                            MAP_SHARED,
+                            device_state.fd,
+                            0);
+    if (device_state.rom == MAP_FAILED)
+        goto fail8;
+
+    if (device_state.rom[0] != 0x55 &&
+        device_state.rom[1] != 0xAA) {
+        errno = EINVAL;
+        goto fail9;
+    }
+
+    rc = pci_bar_register(PCI_ROM_SLOT,
+                          0,
+                          device_state.rom_size,
+                          device_rom_bar_enable,
+                          device_rom_bar_disable,
+                          NULL);
+    if (rc < 0)
+        goto fail10;
+
+done:
+    pci_device_dump();
+
     return 0;
+
+fail10:
+    DBG("fail10\n");
+
+fail9:
+    DBG("fail9\n");
+
+    munmap(device_state.rom, device_state.rom_size);
+
+fail8:
+    DBG("fail8\n");
+
+fail7:
+    DBG("fail7\n");
+
+    close(device_state.fd);
+
+fail6:
+    DBG("fail6\n");
+
+    pci_bar_deregister(2);
+
+fail5:
+    DBG("fail5\n");
+
+    pci_bar_deregister(0);
 
 fail4:
     DBG("fail4\n");
@@ -1189,11 +1465,45 @@ fail1:
     return -1;
 }
 
+uint8_t *device_get_vram(void)
+{
+	return device_state.vram;
+}
+
+vga_t *device_get_vga(void)
+{
+	return &device_state.vga;
+}
+
+int device_vram_dirty(uint64_t addr, uint64_t size)
+{
+    return 1;
+}
+
 void
 device_teardown(void)
 {
+    if (device_state.fd >= 0) {
+        pci_bar_deregister(PCI_ROM_SLOT);
+        munmap(device_state.rom, device_state.rom_size);
+        close(device_state.fd);
+    }
+
+    pci_bar_deregister(2);
     pci_bar_deregister(0);
     pci_device_deregister();
     device_vga_deregister();
     free(device_state.vram);
 }
+
+/*
+ * Local variables:
+ * mode: C
+ * c-tab-always-indent: nil
+ * c-file-style: "BSD"
+ * c-basic-offset: 4
+ * c-basic-indent: 4
+ * tab-width: 4
+ * indent-tabs-mode: nil
+ * End:
+ */

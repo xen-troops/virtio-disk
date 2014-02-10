@@ -27,20 +27,23 @@
  *
  */
 
-#ifndef  _MAPCACHE_H
-#define  _MAPCACHE_H
+#ifndef  _SURFACE_H
+#define  _SURFACE_H
 
-uint8_t *mapcache_lookup(xen_pfn_t pfn);
-void    mapcache_invalidate(void);
+int     surface_initialize(void);
+void    surface_refresh(void);
+void    surface_refresh_test(void);
+void    surface_teardown(void);
 
-#endif  /* _MAPCACHE_H */
+#endif  /* _SURFACE_H */
 
 /*
  * Local variables:
  * mode: C
+ * c-tab-always-indent: nil
  * c-file-style: "BSD"
  * c-basic-offset: 4
- * c-tab-always-indent: nil
+ * c-basic-indent: 4
  * tab-width: 4
  * indent-tabs-mode: nil
  * End:

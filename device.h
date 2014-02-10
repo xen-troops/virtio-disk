@@ -1,5 +1,5 @@
 /*  
- * Copyright (c) 2012, Citrix Systems Inc.
+ * Copyright (c) 2014, Citrix Systems Inc.
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -26,12 +26,30 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  */
+
+#include "vga.h"
+
 #ifndef  _DEVICE_H
 #define  _DEVICE_H
 
 int     device_initialize(unsigned int bus, unsigned int device, unsigned int function,
-                          uint64_t vram_size);
+                          uint64_t vram_size, char *romfile);
 void    device_teardown(void);
+
+uint8_t *device_get_vram(void);
+vga_t   *device_get_vga(void);
+int     device_vram_dirty(uint64_t addr, uint64_t size);
 
 #endif  /* _DEVICE_H */
 
+/*
+ * Local variables:
+ * mode: C
+ * c-tab-always-indent: nil
+ * c-file-style: "BSD"
+ * c-basic-offset: 4
+ * c-basic-indent: 4
+ * tab-width: 4
+ * indent-tabs-mode: nil
+ * End:
+ */

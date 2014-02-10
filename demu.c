@@ -1,5 +1,5 @@
 /*  
- * Copyright (c) 2012, Citrix Systems Inc.
+ * Copyright (c) 2014, Citrix Systems Inc.
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -67,25 +67,35 @@
 #include "mapcache.h"
 #include "device.h"
 #include "pci.h"
+#include "surface.h"
 #include "demu.h"
 
 #define mb() asm volatile ("" : : : "memory")
 
+#define __min(_x, _y) (((_x) <= (_y)) ? (_x) : (_y))
+#define __max(_x, _y) (((_x) > (_y)) ? (_x) : (_y))
+
+#define DEMU_VRAM_SIZE  0x01000000
+#define DEMU_ROM_FILE   "vgabios-stdvga.bin"
+
 enum {
     DEMU_OPT_DOMAIN,
     DEMU_OPT_DEVICE,
+    DEMU_OPT_ROM,
     DEMU_NR_OPTS
     };
 
 static struct option demu_option[] = {
     {"domain", 1, NULL, 0},
     {"device", 1, NULL, 0},
+    {"rom", 1, NULL, 0},
     {NULL, 0, NULL, 0}
 };
 
 static const char *demu_option_text[] = {
     "<domid>",
     "<device>",
+    "<rom image>",
     NULL
 };
 
@@ -119,6 +129,8 @@ typedef enum {
     DEMU_SEQ_PORTS_BOUND,
     DEMU_SEQ_BUF_PORT_BOUND,
     DEMU_SEQ_VNC_INITIALIZED,
+    DEMU_SEQ_DEVICE_INITIALIZED,
+    DEMU_SEQ_SURFACE_INITIALIZED,
     DEMU_SEQ_INITIALIZED,
     DEMU_NR_SEQS
 } demu_seq_t;
@@ -145,6 +157,9 @@ typedef struct demu_state {
     buffered_iopage_t   *buffered_iopage;
     evtchn_port_t       buf_ioreq_port;
     evtchn_port_t       buf_ioreq_local_port;
+    uint32_t            width;
+    uint32_t            height;
+    uint32_t            depth;
     uint8_t             *default_framebuffer;
     uint8_t             *framebuffer;
     rfbScreenInfoPtr    screen;
@@ -256,7 +271,6 @@ demu_deregister_space(demu_space_t **headp, uint64_t start)
         }
         spacep = &(space->next);
     }
-    assert(FALSE);
 }
 
 int
@@ -395,16 +409,16 @@ demu_deregister_memory_space(uint64_t start)
         (_val) = 0;                                                 \
         for (_i = 0; _i < (_count); _i++)                           \
         {                                                           \
-            (_val) |= (uint32_t)(_fn)((_priv), (_addr)) << _shift;  \
+            (_val) |= (uint64_t)(_fn)((_priv), (_addr)) << _shift;  \
             _shift += 8 * (_size);                                  \
             (_addr) += (_size);                                     \
         }                                                           \
     } while (FALSE)
 
-static uint32_t
+uint64_t
 demu_io_read(demu_space_t *space, uint64_t addr, uint64_t size)
 {
-    uint32_t    val = 0;
+    uint64_t    val = ~0ull;
 
     switch (size) {
     case 1:
@@ -415,7 +429,7 @@ demu_io_read(demu_space_t *space, uint64_t addr, uint64_t size)
         if (space->ops->readw == NULL)
             DEMU_IO_READ(space->ops->readb, space->priv, addr, 1, 2, val);
         else
-            val = space->ops->readw(space->priv, addr);
+            DEMU_IO_READ(space->ops->readw, space->priv, addr, 2, 1, val);
         break;
 
     case 4:
@@ -425,12 +439,23 @@ demu_io_read(demu_space_t *space, uint64_t addr, uint64_t size)
             else
                 DEMU_IO_READ(space->ops->readw, space->priv, addr, 2, 2, val);
         } else {
-            val = space->ops->readl(space->priv, addr);
+            DEMU_IO_READ(space->ops->readl, space->priv, addr, 4, 1, val);
+        }
+        break;
+
+    case 8:
+        if (space->ops->readl == NULL) {
+            if (space->ops->readw == NULL)
+                DEMU_IO_READ(space->ops->readb, space->priv, addr, 1, 8, val);
+            else
+                DEMU_IO_READ(space->ops->readw, space->priv, addr, 2, 4, val);
+        } else {
+            DEMU_IO_READ(space->ops->readl, space->priv, addr, 4, 2, val);
         }
         break;
 
     default:
-        assert(FALSE);
+        break;
     }
 
     return val;
@@ -438,8 +463,8 @@ demu_io_read(demu_space_t *space, uint64_t addr, uint64_t size)
 
 #define DEMU_IO_WRITE(_fn, _priv, _addr, _size, _count, _val)   \
     do {                                                        \
-        int             	_i = 0;                             \
-        unsigned int	_shift = 0;                             \
+        int             _i = 0;                                 \
+        unsigned int    _shift = 0;                             \
                                                                 \
         for (_i = 0; _i < (_count); _i++)                       \
         {                                                       \
@@ -449,8 +474,8 @@ demu_io_read(demu_space_t *space, uint64_t addr, uint64_t size)
         }                                                       \
     } while (FALSE)
 
-static void
-demu_io_write(demu_space_t *space, uint64_t addr, uint64_t size, uint32_t val)
+void
+demu_io_write(demu_space_t *space, uint64_t addr, uint64_t size, uint64_t val)
 {
     switch (size) {
     case 1:
@@ -461,7 +486,7 @@ demu_io_write(demu_space_t *space, uint64_t addr, uint64_t size, uint32_t val)
         if (space->ops->writew == NULL)
             DEMU_IO_WRITE(space->ops->writeb, space->priv, addr, 1, 2, val);
         else
-            space->ops->writew(space->priv, addr, val);
+            DEMU_IO_WRITE(space->ops->writew, space->priv, addr, 2, 1, val);
         break;
 
     case 4:
@@ -471,26 +496,53 @@ demu_io_write(demu_space_t *space, uint64_t addr, uint64_t size, uint32_t val)
             else
                 DEMU_IO_WRITE(space->ops->writew, space->priv, addr, 2, 2, val);
         } else {
-            space->ops->writel(space->priv, addr, val);
+            DEMU_IO_WRITE(space->ops->writel, space->priv, addr, 4, 1, val);
+        }
+        break;
+
+    case 8:
+        if (space->ops->writel == NULL) {
+            if (space->ops->writew == NULL)
+                DEMU_IO_WRITE(space->ops->writeb, space->priv, addr, 1, 8, val);
+            else
+                DEMU_IO_WRITE(space->ops->writew, space->priv, addr, 2, 4, val);
+        } else {
+            DEMU_IO_WRITE(space->ops->writel, space->priv, addr, 4, 2, val);
         }
         break;
 
     default:
-        assert(FALSE);
+        break;
     }
 }
 
 static inline void
 __copy_to_guest_memory(uint64_t addr, uint64_t size, uint8_t *src)
 {
-    uint8_t *dst = mapcache_lookup(addr);
+    xen_pfn_t       pfn = addr >> TARGET_PAGE_SHIFT;
+    uint64_t        offset = addr & (TARGET_PAGE_SIZE - 1);
 
-    assert(((addr + size - 1) >> TARGET_PAGE_SHIFT) == (addr >> TARGET_PAGE_SHIFT));
+    while (size != 0) {
+        uint8_t     *dst;
+        uint64_t    chunk;
 
-    if (dst == NULL)
-        goto fail1;
+        chunk = __min(size, TARGET_PAGE_SIZE - offset);
 
-    memcpy(dst, src, size);
+        dst = mapcache_lookup(pfn);
+        if (dst == NULL)
+            goto fail1;
+
+        dst += offset;
+
+        memcpy(dst, src, chunk);
+
+        src += chunk;
+        size -= chunk;
+
+        pfn++;
+        offset = 0;
+    }
+
     return;
 
 fail1:
@@ -500,14 +552,30 @@ fail1:
 static inline void
 __copy_from_guest_memory(uint64_t addr, uint64_t size, uint8_t *dst)
 {
-    uint8_t *src = mapcache_lookup(addr);
+    xen_pfn_t       pfn = addr >> TARGET_PAGE_SHIFT;
+    uint64_t        offset = addr & (TARGET_PAGE_SIZE - 1);
 
-    assert(((addr + size - 1) >> TARGET_PAGE_SHIFT) == (addr >> TARGET_PAGE_SHIFT));
+    while (size != 0) {
+        uint8_t     *src;
+        uint64_t    chunk;
 
-    if (src == NULL)
-        goto fail1;
+        chunk = __min(size, TARGET_PAGE_SIZE - offset);
 
-    memcpy(dst, src, size);
+        src = mapcache_lookup(pfn);
+        if (src == NULL)
+            goto fail1;
+
+        src += offset;
+
+        memcpy(dst, src, chunk);
+
+        dst += chunk;
+        size -= chunk;
+
+        pfn++;
+        offset = 0;
+    }
+
     return;
 
 fail1:
@@ -524,13 +592,13 @@ demu_handle_io(demu_space_t *space, ioreq_t *ioreq, int is_mmio)
 
     if (ioreq->dir == IOREQ_READ) {
         if (!ioreq->data_is_ptr) {
-            ioreq->data = (uint64_t)demu_io_read(space, ioreq->addr, ioreq->size);
+            ioreq->data = demu_io_read(space, ioreq->addr, ioreq->size);
         } else {
             int i, sign;
 
             sign = ioreq->df ? -1 : 1;
             for (i = 0; i < ioreq->count; i++) {
-                uint32_t    data;
+                uint64_t    data;
                 
                 data = demu_io_read(space, ioreq->addr, ioreq->size);
 
@@ -543,13 +611,13 @@ demu_handle_io(demu_space_t *space, ioreq_t *ioreq, int is_mmio)
         }
     } else if (ioreq->dir == IOREQ_WRITE) {
         if (!ioreq->data_is_ptr) {
-            demu_io_write(space, ioreq->addr, ioreq->size, (uint32_t)ioreq->data);
+            demu_io_write(space, ioreq->addr, ioreq->size, ioreq->data);
         } else {
             int i, sign;
 
             sign = ioreq->df ? -1 : 1;
             for (i = 0; i < ioreq->count; i++) {
-                uint32_t    data;
+                uint64_t    data;
 
                 __copy_from_guest_memory(ioreq->data + (sign * i * ioreq->size),
                                          ioreq->size, (uint8_t *)&data);
@@ -567,7 +635,7 @@ demu_handle_io(demu_space_t *space, ioreq_t *ioreq, int is_mmio)
 fail1:
     DBG("fail1\n");
 }
- 
+
 static void
 demu_handle_ioreq(ioreq_t *ioreq)
 {
@@ -605,7 +673,7 @@ demu_handle_ioreq(ioreq_t *ioreq)
         break;
 
     default:
-        assert(FALSE);
+        DBG("UNKNOWN (%02x)", ioreq->type);
         break;
     }
 }
@@ -633,7 +701,7 @@ static enum rfbNewClientAction demu_vnc_add_client(rfbClientPtr client)
 }
 
 void
-demu_vnc_new_framebuffer(uint32_t width, uint32_t height, uint32_t depth)
+demu_new_framebuffer(uint32_t width, uint32_t height, uint32_t depth)
 {
     rfbScreenInfoPtr    screen = demu_state.screen;
 
@@ -648,6 +716,10 @@ demu_vnc_new_framebuffer(uint32_t width, uint32_t height, uint32_t depth)
             DEMU_VNC_DEFAULT_HEIGHT,
             DEMU_VNC_DEFAULT_DEPTH);
 
+        demu_state.width = DEMU_VNC_DEFAULT_WIDTH;
+        demu_state.height = DEMU_VNC_DEFAULT_HEIGHT;
+        demu_state.width = DEMU_VNC_DEFAULT_DEPTH;
+
         rfbNewFramebuffer(screen,
                           (char *)demu_state.default_framebuffer,
                           DEMU_VNC_DEFAULT_WIDTH,
@@ -656,6 +728,10 @@ demu_vnc_new_framebuffer(uint32_t width, uint32_t height, uint32_t depth)
                           DEMU_VNC_DEFAULT_DEPTH);
     } else {
         DBG("%dx%dx%d\n", width, height, depth);
+
+        demu_state.width = width;
+        demu_state.height = height;
+        demu_state.width = depth;
 
         rfbNewFramebuffer(screen,
                           (char *)demu_state.framebuffer,
@@ -667,9 +743,18 @@ demu_vnc_new_framebuffer(uint32_t width, uint32_t height, uint32_t depth)
 }
 
 uint8_t *
-demu_vnc_get_framebuffer(void)
+demu_get_framebuffer(void)
 {
     return demu_state.framebuffer;
+}   
+
+void
+demu_update_framebuffer(uint32_t x, uint32_t y, uint32_t width, uint32_t height)
+{
+    rfbScreenInfoPtr    screen = demu_state.screen; 
+
+    rfbMarkRectAsModified(screen, x * 160, y, (x + width) * 160, y + height);
+    //rfbMarkRectAsModified(screen, 0, 0, demu_state.width * 160, demu_state.height);
 }   
 
 static int
@@ -800,6 +885,14 @@ demu_seq_next(void)
         DBG(">VNC_INITIALIZED\n");
         break;
 
+    case DEMU_SEQ_DEVICE_INITIALIZED:
+        DBG(">DEVICE_INITIALIZED\n");
+        break;
+
+    case DEMU_SEQ_SURFACE_INITIALIZED:
+        DBG(">SURFACE_INITIALIZED\n");
+        break;
+
     case DEMU_SEQ_INITIALIZED:
         DBG(">INITIALIZED\n");
         break;
@@ -815,6 +908,19 @@ demu_teardown(void)
 {
     if (demu_state.seq == DEMU_SEQ_INITIALIZED) {
         DBG("<INITIALIZED\n");
+
+        demu_state.seq = DEMU_SEQ_SURFACE_INITIALIZED;
+    }
+
+    if (demu_state.seq == DEMU_SEQ_SURFACE_INITIALIZED) {
+        DBG("<SURFACE_INITIALIZED\n");
+        surface_teardown();
+
+        demu_state.seq = DEMU_SEQ_DEVICE_INITIALIZED;
+    }
+
+    if (demu_state.seq == DEMU_SEQ_DEVICE_INITIALIZED) {
+        DBG("<DEVICE_INITIALIZED\n");
         device_teardown();
 
         demu_state.seq = DEMU_SEQ_VNC_INITIALIZED;
@@ -933,7 +1039,7 @@ demu_sigusr1(int num)
 }
 
 static int
-demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned int function)
+demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned int function, char *rom)
 {
     int             rc;
     xc_dominfo_t    dominfo;
@@ -1034,14 +1140,27 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     demu_seq_next();
 
-    rc = device_initialize(bus, device, function, 0x01000000);
+    rc = device_initialize(bus, device, function,
+                           DEMU_VRAM_SIZE,
+                           (rom) ? rom : DEMU_ROM_FILE);
     if (rc < 0)
         goto fail12;
 
     demu_seq_next();
 
+    rc = surface_initialize();
+    if (rc < 0)
+        goto fail13;
+
+    demu_seq_next();
+
+    demu_seq_next();
+
     assert(demu_state.seq == DEMU_SEQ_INITIALIZED);
     return 0;
+
+fail13:
+    DBG("fail13\n");
 
 fail12:
     DBG("fail12\n");
@@ -1192,6 +1311,7 @@ main(int argc, char **argv, char **envp)
 {
     char            *domain_str;
     char            *device_str;
+    char            *rom_str;
     int             index;
     char            *end;
     domid_t         domid;
@@ -1204,6 +1324,7 @@ main(int argc, char **argv, char **envp)
 
     domain_str = NULL;
     device_str = NULL;
+    rom_str = NULL;
 
     for (;;) {
         char    c;
@@ -1222,6 +1343,10 @@ main(int argc, char **argv, char **envp)
 
         case DEMU_OPT_DEVICE:
             device_str = optarg;
+            break;
+
+        case DEMU_OPT_ROM:
+            rom_str = optarg;
             break;
 
         default:
@@ -1273,7 +1398,7 @@ main(int argc, char **argv, char **envp)
 
     sigprocmask(SIG_BLOCK, &block, NULL);
 
-    rc = demu_initialize(domid, 0, device, 0);
+    rc = demu_initialize(domid, 0, device, 0, rom_str);
     if (rc < 0) {
         demu_teardown();
         exit(1);
@@ -1288,24 +1413,26 @@ main(int argc, char **argv, char **envp)
         int             nfds;
         struct timeval  tv;
 
+        FD_ZERO(&rfds);
         FD_ZERO(&wfds);
         FD_ZERO(&xfds);
 
-        rfds = demu_state.screen->allFds;
         FD_SET(efd, &rfds);
 
         tv.tv_sec = 0;
         tv.tv_usec = demu_state.screen->deferUpdateTime * 1000;
 
-        nfds = max(demu_state.screen->maxFd, efd) + 1;
+        nfds = efd + 1;
         rc = select(nfds, &rfds, &wfds, &xfds, &tv);
 
         if (rc > 0) {
             if (FD_ISSET(efd, &rfds))
                 demu_poll_iopages();
+        }
 
-            if (rfbIsActive(demu_state.screen))
-                rfbProcessEvents(demu_state.screen, 0);
+        if (rfbIsActive(demu_state.screen)) {
+            surface_refresh();
+            rfbProcessEvents(demu_state.screen, 1000);
         }
 
         if (rc < 0 && errno != EINTR)

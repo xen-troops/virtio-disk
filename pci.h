@@ -1,5 +1,5 @@
 /*  
- * Copyright (c) 2012, Citrix Systems Inc.
+ * Copyright (c) 2014, Citrix Systems Inc.
  * All rights reserved.
  * 
  * Redistribution and use in source and binary forms, with or without
@@ -31,7 +31,8 @@
 #ifndef  _PCI_H
 #define  _PCI_H
 
-#define PCI_NUM_BAR             6
+#define PCI_NUM_BAR             7
+#define PCI_ROM_SLOT            6
 #define PCI_CONFIG_HEADER_SIZE  0x40
 #define PCI_CONFIG_SIZE         0x100
 #define PCI_BAR_UNMAPPED        (~(0u))
@@ -66,3 +67,14 @@ void    pci_device_dump(void);
 
 #endif  /* _PCI_H */
 
+/*
+ * Local variables:
+ * mode: C
+ * c-tab-always-indent: nil
+ * c-file-style: "BSD"
+ * c-basic-offset: 4
+ * c-basic-indent: 4
+ * tab-width: 4
+ * indent-tabs-mode: nil
+ * End:
+ */
