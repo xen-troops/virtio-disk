@@ -90,44 +90,26 @@
 #define VBE_DISPI_LFB_ENABLED                   0x40
 #define VBE_DISPI_NOCLEARMEM                    0x80
 
-typedef struct vga {
-    uint64_t    lfb_addr;
-    uint64_t    lfb_size;
+int         vga_initialize(unsigned int bus, unsigned int device, unsigned int function,
+                           uint64_t vram_size, char *romfile);
+void        vga_teardown(void);
 
-    uint32_t    latch;
-    uint8_t     sr_index;
-    uint8_t     sr[256];
-    uint8_t     gr_index;
-    uint8_t     gr[256];
-    uint8_t     ar_index;
-    uint8_t     ar[21];
-    int32_t     ar_flip_flop;
-    uint8_t     cr_index;
-    uint8_t     cr[256];        /* CRT registers */
-    uint8_t     msr;            /* Misc Output Register */
-    uint8_t     fcr;            /* Feature Control Register */
-    uint8_t     st00;           /* status 0 */
-    uint8_t     st01;           /* status 1 */
+uint8_t     *vga_get_vram(void);
 
-    uint8_t     dac_state;
-    uint8_t     dac_sub_index;
-    uint8_t     dac_read_index;
-    uint8_t     dac_write_index;
-    uint8_t     dac_cache[3];   /* Used when writing */
-    int32_t     dac_8bit;
+uint8_t     vga_get_ar_index(void);
+uint8_t     vga_get_ar(int reg);
+uint8_t     vga_get_cr(int reg);
+uint8_t     vga_get_sr(int reg);
+uint8_t     vga_get_gr(int reg);
+uint8_t     vga_get_palette(int offset);
+int         vga_is_dac_8bit(void);
+int         vga_test_and_clear_plane2(void);
+uint16_t    vga_get_vbe_regs(int reg);
+uint32_t    vga_get_vbe_start_addr(void);
+uint32_t    vga_get_vbe_line_offset(void);
 
-    uint8_t     palette[768];
-
-    int32_t     bank_offset;
-
-    uint16_t    vbe_index;
-    uint16_t    vbe_regs[VBE_DISPI_INDEX_NB];
-    uint32_t    vbe_start_addr;
-    uint32_t    vbe_line_offset;
-    uint32_t    vbe_bank_mask;
-
-    uint32_t    plane_updated;
-} vga_t;
+void        vga_get_vram_dirty_map(int enable);
+int         vga_vram_is_dirty(uint64_t addr, uint64_t size);
 
 #endif  /*_VGA_H */
 

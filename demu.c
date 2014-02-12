@@ -65,7 +65,7 @@
 
 #include "debug.h"
 #include "mapcache.h"
-#include "device.h"
+#include "vga.h"
 #include "pci.h"
 #include "surface.h"
 #include "demu.h"
@@ -129,7 +129,7 @@ typedef enum {
     DEMU_SEQ_PORTS_BOUND,
     DEMU_SEQ_BUF_PORT_BOUND,
     DEMU_SEQ_VNC_INITIALIZED,
-    DEMU_SEQ_DEVICE_INITIALIZED,
+    DEMU_SEQ_VGA_INITIALIZED,
     DEMU_SEQ_SURFACE_INITIALIZED,
     DEMU_SEQ_INITIALIZED,
     DEMU_NR_SEQS
@@ -1075,8 +1075,8 @@ demu_seq_next(void)
         DBG(">VNC_INITIALIZED\n");
         break;
 
-    case DEMU_SEQ_DEVICE_INITIALIZED:
-        DBG(">DEVICE_INITIALIZED\n");
+    case DEMU_SEQ_VGA_INITIALIZED:
+        DBG(">VGA_INITIALIZED\n");
         break;
 
     case DEMU_SEQ_SURFACE_INITIALIZED:
@@ -1106,12 +1106,12 @@ demu_teardown(void)
         DBG("<SURFACE_INITIALIZED\n");
         surface_teardown();
 
-        demu_state.seq = DEMU_SEQ_DEVICE_INITIALIZED;
+        demu_state.seq = DEMU_SEQ_VGA_INITIALIZED;
     }
 
-    if (demu_state.seq == DEMU_SEQ_DEVICE_INITIALIZED) {
-        DBG("<DEVICE_INITIALIZED\n");
-        device_teardown();
+    if (demu_state.seq == DEMU_SEQ_VGA_INITIALIZED) {
+        DBG("<VGA_INITIALIZED\n");
+        vga_teardown();
 
         demu_state.seq = DEMU_SEQ_VNC_INITIALIZED;
     }
@@ -1330,9 +1330,9 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     demu_seq_next();
 
-    rc = device_initialize(bus, device, function,
-                           DEMU_VRAM_SIZE,
-                           (rom) ? rom : DEMU_ROM_FILE);
+    rc = vga_initialize(bus, device, function,
+                        DEMU_VRAM_SIZE,
+                        (rom) ? rom : DEMU_ROM_FILE);
     if (rc < 0)
         goto fail12;
 

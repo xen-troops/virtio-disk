@@ -65,7 +65,6 @@
 
 #include "debug.h"
 #include "demu.h"
-#include "device.h"
 #include "vga.h"
 #include "surface.h"
 
@@ -112,88 +111,6 @@ static uint32_t     expand4[256];
 static uint16_t     expand2[256];
 static uint8_t      expand4to8[16];
 
-static uint8_t get_ar_index(surface_t *s)
-{
-    vga_t   *vga = device_get_vga();
-
-    return vga->ar_index;
-}
-
-static uint8_t get_ar(surface_t *s, int reg)
-{
-    vga_t   *vga = device_get_vga();
-
-    return vga->ar[reg];
-}
-
-static uint8_t get_cr(surface_t *s, int reg)
-{
-    vga_t   *vga = device_get_vga();
-
-    return vga->cr[reg];
-}
-
-static uint8_t get_sr(surface_t *s, int reg)
-{
-    vga_t   *vga = device_get_vga();
-
-    return vga->sr[reg];
-}
-
-static uint8_t get_gr(surface_t *s, int reg)
-{
-    vga_t   *vga = device_get_vga();
-
-    return vga->gr[reg];
-}
-
-static uint8_t get_palette(surface_t *s, int offset)
-{
-    vga_t   *vga = device_get_vga();
-
-    return vga->palette[offset];
-}
-
-static int is_dac_8bit(surface_t *s)
-{
-    vga_t   *vga = device_get_vga();
-
-    return !!vga->dac_8bit;
-}
-
-static int test_and_clear_plane2(surface_t *s)
-{
-    vga_t   *vga = device_get_vga();
-    uint32_t val;
-
-    val = vga->plane_updated & (1 << 2);
-    if (val)
-        vga->plane_updated = 0;
-
-    return !!val;
-}
-
-static uint16_t get_vbe_regs(surface_t *s, int reg)
-{
-    vga_t   *vga = device_get_vga();
-
-    return vga->vbe_regs[reg];
-}
-
-static uint32_t get_vbe_start_addr(surface_t *s)
-{
-    vga_t   *vga = device_get_vga();
-
-    return vga->vbe_start_addr;
-}
-
-static uint32_t get_vbe_line_offset(surface_t *s)
-{
-    vga_t   *vga = device_get_vga();
-
-    return vga->vbe_line_offset;
-}
-
 static void get_offsets(surface_t *s,
                         uint32_t *pline_offset,
                         uint32_t *pstart_addr,
@@ -201,22 +118,22 @@ static void get_offsets(surface_t *s,
 {
     uint32_t start_addr, line_offset, line_compare;
 
-    if (get_vbe_regs(s, VBE_DISPI_INDEX_ENABLE) & VBE_DISPI_ENABLED) {
-        line_offset = get_vbe_line_offset(s);
-        start_addr = get_vbe_start_addr(s);
+    if (vga_get_vbe_regs(VBE_DISPI_INDEX_ENABLE) & VBE_DISPI_ENABLED) {
+        line_offset = vga_get_vbe_line_offset();
+        start_addr = vga_get_vbe_start_addr();
         line_compare = 65535;
     } else {
         /* compute line_offset in bytes */
-        line_offset = get_cr(s, 0x13);
+        line_offset = vga_get_cr(0x13);
         line_offset <<= 3;
 
         /* starting address */
-        start_addr = get_cr(s, 0x0d) | (get_cr(s, 0x0c) << 8);
+        start_addr = vga_get_cr(0x0d) | (vga_get_cr(0x0c) << 8);
 
         /* line compare */
-        line_compare = get_cr(s, 0x18) |
-            ((get_cr(s, 0x07) & 0x10) << 4) |
-            ((get_cr(s, 0x09) & 0x40) << 3);
+        line_compare = vga_get_cr(0x18) |
+            ((vga_get_cr(0x07) & 0x10) << 4) |
+            ((vga_get_cr(0x09) & 0x40) << 3);
     }
     *pline_offset = line_offset;
     *pstart_addr = start_addr;
@@ -227,8 +144,8 @@ static int get_bpp(surface_t *s)
 {
     int ret;
 
-    if (get_vbe_regs(s, VBE_DISPI_INDEX_ENABLE) & VBE_DISPI_ENABLED) {
-        ret = get_vbe_regs(s, VBE_DISPI_INDEX_BPP);
+    if (vga_get_vbe_regs(VBE_DISPI_INDEX_ENABLE) & VBE_DISPI_ENABLED) {
+        ret = vga_get_vbe_regs(VBE_DISPI_INDEX_BPP);
     } else  {
         ret = 0;
     }
@@ -240,14 +157,14 @@ static void get_resolution(surface_t *s, int *pwidth, int *pheight)
 {
     int width, height;
 
-    if (get_vbe_regs(s, VBE_DISPI_INDEX_ENABLE) & VBE_DISPI_ENABLED) {
-        width = get_vbe_regs(s, VBE_DISPI_INDEX_XRES);
-        height = get_vbe_regs(s, VBE_DISPI_INDEX_YRES);
+    if (vga_get_vbe_regs(VBE_DISPI_INDEX_ENABLE) & VBE_DISPI_ENABLED) {
+        width = vga_get_vbe_regs(VBE_DISPI_INDEX_XRES);
+        height = vga_get_vbe_regs(VBE_DISPI_INDEX_YRES);
     } else  {
-        width = (get_cr(s, 0x01) + 1) * 8;
-        height = get_cr(s, 0x12) |
-            ((get_cr(s, 0x07) & 0x02) << 7) |
-            ((get_cr(s, 0x07) & 0x40) << 3);
+        width = (vga_get_cr(0x01) + 1) * 8;
+        height = vga_get_cr(0x12) |
+            ((vga_get_cr(0x07) & 0x02) << 7) |
+            ((vga_get_cr(0x07) & 0x40) << 3);
         height = (height + 1);
     }
     *pwidth = width;
@@ -271,15 +188,15 @@ static int vgpu_update_palette16(surface_t *s)
     full_update = 0;
     palette = s->last_palette;
     for(i = 0; i < 16; i++) {
-        v = get_ar(s, i);
-        if (get_ar(s, 0x10) & 0x80)
-            v = ((get_ar(s, 0x14) & 0xf) << 4) | (v & 0xf);
+        v = vga_get_ar(i);
+        if (vga_get_ar(0x10) & 0x80)
+            v = ((vga_get_ar(0x14) & 0xf) << 4) | (v & 0xf);
         else
-            v = ((get_ar(s, 0x14) & 0xc) << 4) | (v & 0x3f);
+            v = ((vga_get_ar(0x14) & 0xc) << 4) | (v & 0x3f);
         v = v * 3;
-        col = s->rgb_to_pixel(c6_to_8(get_palette(s, v)),
-                              c6_to_8(get_palette(s, v + 1)),
-                              c6_to_8(get_palette(s, v + 2)));
+        col = s->rgb_to_pixel(c6_to_8(vga_get_palette(v)),
+                              c6_to_8(vga_get_palette(v + 1)),
+                              c6_to_8(vga_get_palette(v + 2)));
         if (col != palette[i]) {
             full_update = 1;
             palette[i] = col;
@@ -297,14 +214,14 @@ static int vgpu_update_palette256(surface_t *s)
     palette = s->last_palette;
     v = 0;
     for(i = 0; i < 256; i++) {
-        if (is_dac_8bit(s)) {
-          col = s->rgb_to_pixel(get_palette(s, v),
-                                get_palette(s, v + 1),
-                                get_palette(s, v + 2));
+        if (vga_is_dac_8bit()) {
+          col = s->rgb_to_pixel(vga_get_palette(v),
+                                vga_get_palette(v + 1),
+                                vga_get_palette(v + 2));
         } else {
-          col = s->rgb_to_pixel(c6_to_8(get_palette(s, v)),
-                                c6_to_8(get_palette(s, v + 1)),
-                                c6_to_8(get_palette(s, v + 2)));
+          col = s->rgb_to_pixel(c6_to_8(vga_get_palette(v)),
+                                c6_to_8(vga_get_palette(v + 1)),
+                                c6_to_8(vga_get_palette(v + 2)));
         }
         if (col != palette[i]) {
             full_update = 1;
@@ -560,14 +477,14 @@ surface_draw_text(surface_t *s, int full_update)
     uint32_t *ch_attr_ptr;
     vga_draw_glyph8_func *__vga_draw_glyph8;
     vga_draw_glyph9_func *__vga_draw_glyph9;
-    uint8_t *vram = device_get_vram();
+    uint8_t *vram = vga_get_vram();
 
     assert(vram != NULL);
 
-    device_vram_get_dirty_map(FALSE);
+    vga_get_vram_dirty_map(FALSE);
 
     /* compute font data address (in plane 2) */
-    v = get_sr(s, 3);
+    v = vga_get_sr(3);
     offset = (((v >> 4) & 1) | ((v << 1) & 6)) * 8192 * 4 + 2;
     if (offset != s->font_offsets[0]) {
         s->font_offsets[0] = offset;
@@ -582,7 +499,7 @@ surface_draw_text(surface_t *s, int full_update)
         full_update = 1;
     }
 
-    if (test_and_clear_plane2(s)) {
+    if (vga_test_and_clear_plane2()) {
         /* if the plane 2 was modified since the last display, it
            indicates the font may have been modified */
         full_update = 1;
@@ -594,20 +511,20 @@ surface_draw_text(surface_t *s, int full_update)
     s1 = vram + (s->start_addr * 4);
 
     /* total width & height */
-    cheight = (get_cr(s, 9) & 0x1f) + 1;
+    cheight = (vga_get_cr(9) & 0x1f) + 1;
     cw = 8;
-    if (!(get_sr(s, 1) & 0x01))
+    if (!(vga_get_sr(1) & 0x01))
         cw = 9;
-    if (get_sr(s, 1) & 0x08)
+    if (vga_get_sr(1) & 0x08)
         cw = 16; /* NOTE: no 18 pixel wide */
-    width = (get_cr(s, 0x01) + 1);
-    if (get_cr(s, 0x06) == 100) {
+    width = (vga_get_cr(0x01) + 1);
+    if (vga_get_cr(0x06) == 100) {
         /* ugly hack for CGA 160x100x16 - explain me the logic */
         height = 100;
     } else {
-        height = get_cr(s, 0x12) |
-            ((get_cr(s, 0x07) & 0x02) << 7) |
-            ((get_cr(s, 0x07) & 0x40) << 3);
+        height = vga_get_cr(0x12) |
+            ((vga_get_cr(0x07) & 0x02) << 7) |
+            ((vga_get_cr(0x07) & 0x40) << 3);
         height = (height + 1) / cheight;
     }
     if ((height * width) > CH_ATTR_SIZE) {
@@ -634,10 +551,10 @@ surface_draw_text(surface_t *s, int full_update)
     palette = s->last_palette;
     x_incr = cw * 4;
     
-    cursor_offset = ((get_cr(s, 0x0e) << 8) | get_cr(s, 0x0f)) - s->start_addr;
+    cursor_offset = ((vga_get_cr(0x0e) << 8) | vga_get_cr(0x0f)) - s->start_addr;
     if (cursor_offset != s->cursor_offset ||
-        get_cr(s, 0xa) != s->cursor_start ||
-        get_cr(s, 0xb) != s->cursor_end) {
+        vga_get_cr(0xa) != s->cursor_start ||
+        vga_get_cr(0xb) != s->cursor_end) {
       /* if the cursor position changed, we update the old and new
          chars */
         if (s->cursor_offset < CH_ATTR_SIZE)
@@ -645,8 +562,8 @@ surface_draw_text(surface_t *s, int full_update)
         if (cursor_offset < CH_ATTR_SIZE)
             s->last_ch_attr[cursor_offset] = -1;
         s->cursor_offset = cursor_offset;
-        s->cursor_start = get_cr(s, 0xa);
-        s->cursor_end = get_cr(s, 0xb);
+        s->cursor_start = vga_get_cr(0xa);
+        s->cursor_end = vga_get_cr(0xb);
     }
     cursor_ptr = vram + (s->start_addr + cursor_offset) * 4;
 
@@ -682,16 +599,16 @@ surface_draw_text(surface_t *s, int full_update)
                     __vga_draw_glyph8(d1, linesize, font_ptr, cheight, fgcol, bgcol);
                 } else {
                     dup9 = 0;
-                    if (ch >= 0xb0 && ch <= 0xdf && (get_ar(s, 0x10) & 0x04))
+                    if (ch >= 0xb0 && ch <= 0xdf && (vga_get_ar(0x10) & 0x04))
                         dup9 = 1;
                     __vga_draw_glyph9(d1, linesize, font_ptr, cheight, fgcol, bgcol, dup9);
                 }
                 if (src == cursor_ptr &&
-                    !(get_cr(s, 0x0a) & 0x20)) {
+                    !(vga_get_cr(0x0a) & 0x20)) {
                     int line_start, line_last, h;
                     /* draw the cursor */
-                    line_start = get_cr(s, 0x0a) & 0x1f;
-                    line_last = get_cr(s, 0x0b) & 0x1f;
+                    line_start = vga_get_cr(0x0a) & 0x1f;
+                    line_last = vga_get_cr(0x0b) & 0x1f;
                     /* XXX: check that */
                     if (line_last > cheight - 1)
                         line_last = cheight - 1;
@@ -728,7 +645,7 @@ surface_draw_graphic(surface_t *s, int full_update)
     uint8_t *d;
     uint32_t v, addr1, addr;
     vga_draw_line_func *__vga_draw_line;
-    uint8_t *vram = device_get_vram();
+    uint8_t *vram = vga_get_vram();
 
     assert(vram != NULL);
 
@@ -737,10 +654,10 @@ surface_draw_graphic(surface_t *s, int full_update)
     get_resolution(s, &width, &height);
     disp_width = width;
 
-    shift_control = (get_gr(s, 0x05) >> 5) & 3;
-    double_scan = (get_cr(s, 0x09) >> 7);
+    shift_control = (vga_get_gr(0x05) >> 5) & 3;
+    double_scan = (vga_get_cr(0x09) >> 7);
     if (shift_control != 1) {
-        multi_scan = (((get_cr(s, 0x09) & 0x1f) + 1) << double_scan) - 1;
+        multi_scan = (((vga_get_cr(0x09) & 0x1f) + 1) << double_scan) - 1;
     } else {
         /* in CGA modes, multi_scan is ignored */
         multi_scan = double_scan;
@@ -752,16 +669,16 @@ surface_draw_graphic(surface_t *s, int full_update)
         s->shift_control = shift_control;
         s->double_scan = double_scan;
     }
-    if (shift_control == 1 && (get_sr(s, 0x01) & 8)) {
+    if (shift_control == 1 && (vga_get_sr(0x01) & 8)) {
         disp_width <<= 1;
     }
 
     if (shift_control == 0) {
-        if (get_sr(s, 0x01) & 8) {
+        if (vga_get_sr(0x01) & 8) {
             disp_width <<= 1;
         }
     } else if (shift_control == 1) {
-        if (get_sr(s, 0x01) & 8) {
+        if (vga_get_sr(0x01) & 8) {
             disp_width <<= 1;
         }
     }
@@ -786,7 +703,7 @@ surface_draw_graphic(surface_t *s, int full_update)
 
     if (shift_control == 0) {
         full_update |= vgpu_update_palette16(s);
-        if (get_sr(s, 0x01) & 8) {
+        if (vga_get_sr(0x01) & 8) {
             v = VGA_DRAW_LINE4D2;
         } else {
             v = VGA_DRAW_LINE4;
@@ -794,7 +711,7 @@ surface_draw_graphic(surface_t *s, int full_update)
         bits = 4;
     } else if (shift_control == 1) {
         full_update |= vgpu_update_palette16(s);
-        if (get_sr(s, 0x01) & 8) {
+        if (vga_get_sr(0x01) & 8) {
             v = VGA_DRAW_LINE2D2;
         } else {
             v = VGA_DRAW_LINE2;
@@ -843,20 +760,20 @@ surface_draw_graphic(surface_t *s, int full_update)
     linesize = s->linesize;
     y1 = 0;
 
-    device_vram_get_dirty_map(TRUE);
+    vga_get_vram_dirty_map(TRUE);
 
     for(y = 0; y < height; y++) {
         addr = addr1;
-        if (!(get_cr(s, 0x17) & 1)) {
+        if (!(vga_get_cr(0x17) & 1)) {
             int shift;
             /* CGA compatibility handling */
-            shift = 14 + ((get_cr(s, 0x17) >> 6) & 1);
+            shift = 14 + ((vga_get_cr(0x17) >> 6) & 1);
             addr = (addr & ~(1 << shift)) | ((y1 & 1) << shift);
         }
-        if (!(get_cr(s, 0x17) & 2)) {
+        if (!(vga_get_cr(0x17) & 2)) {
             addr = (addr & ~0x8000) | ((y1 & 2) << 14);
         }
-        update = full_update | device_vram_is_dirty(addr, bwidth);
+        update = full_update | vga_vram_is_dirty(addr, bwidth);
         /* explicit invalidation for the hardware cursor */
         update |= (s->invalidated_y_table[y >> 5] >> (y & 0x1f)) & 1;
         if (update) {
@@ -865,7 +782,7 @@ surface_draw_graphic(surface_t *s, int full_update)
             if (y_start < 0)
                 y_start = y;
 
-            plane_enable = get_ar(s, 0x12) & 0xf;
+            plane_enable = vga_get_ar(0x12) & 0xf;
             __vga_draw_line(s->last_palette, plane_enable, d, vram + addr, width);
         } else {
             if (y_start >= 0) {
@@ -876,7 +793,7 @@ surface_draw_graphic(surface_t *s, int full_update)
             }
         }
         if (!multi_run) {
-            mask = (get_cr(s, 0x17) & 3) ^ 3;
+            mask = (vga_get_cr(0x17) & 3) ^ 3;
             if ((y1 & mask) == mask)
                 addr1 += line_offset;
             y1++;
@@ -904,7 +821,7 @@ surface_draw_blank(surface_t *s, int full_update)
 {
     int val;
 
-    device_vram_get_dirty_map(FALSE);
+    vga_get_vram_dirty_map(FALSE);
 
     if (!full_update)
         return;
@@ -928,12 +845,12 @@ surface_refresh(void)
     surface_t *s = &surface_state;
     int full_update;
     int graphic_mode;
-    uint8_t *vram = device_get_vram();
+    uint8_t *vram = vga_get_vram();
 
-    if (!(get_ar_index(s) & 0x20) || vram == NULL) {
+    if (!(vga_get_ar_index() & 0x20) || vram == NULL) {
         graphic_mode = GMODE_BLANK;
     } else {
-        graphic_mode = get_gr(s, 6) & 1;
+        graphic_mode = vga_get_gr(6) & 1;
     }
 
     if (graphic_mode != s->graphic_mode) {

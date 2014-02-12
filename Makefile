@@ -1,6 +1,6 @@
 TARGET = demu
 
-OBJS :=	device.o \
+OBJS :=	vga.o \
 	pci.o \
 	mapcache.o \
 	surface.o \
