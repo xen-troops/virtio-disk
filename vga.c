@@ -138,7 +138,6 @@ typedef struct vga {
     uint64_t        vram_addr;
     uint64_t        vram_size;
     uint8_t         *vram;
-    int             vram_enabled;
     unsigned long   *bitmap;
 
     uint64_t        mmio_addr;
@@ -566,7 +565,7 @@ static io_ops_t vga_port_ops  = {
 static void
 __copy_from_vram(uint64_t addr, uint8_t *dst, uint64_t size)
 {
-    if (vga_state.vram != NULL && vga_state.vram_enabled)
+    if (vga_state.vram != NULL)
         memcpy(dst, &vga_state.vram[addr], size);
     else
         memset(dst, 0xff, size);
@@ -641,7 +640,7 @@ vga_memory_readb(void *priv, uint64_t addr)
 static void
 __copy_to_vram(uint8_t *src, uint64_t addr, uint64_t size)
 {
-    if (vga_state.vram != NULL && vga_state.vram_enabled) {
+    if (vga_state.vram != NULL) {
         memcpy(&vga_state.vram[addr], src, size);
         demu_set_guest_dirty_page((vga_state.vram_addr + addr) >> TARGET_PAGE_SHIFT);
     }
@@ -882,7 +881,7 @@ vbe_index_write(void *priv, uint16_t val)
 static void
 __clear_vram(uint64_t size)
 {
-    if (vga_state.vram != NULL && vga_state.vram_enabled)
+    if (vga_state.vram != NULL)
         memset(vga_state.vram, 0, size);
 }
 
@@ -1159,18 +1158,12 @@ vram_bar_enable(void *priv, uint64_t addr)
 {
     assert(priv == NULL);
 
-    DBG("%"PRIx64"\n", addr);
-
-    if (vga_state.vram_addr == 0)
-        vga_state.vram = demu_map_guest_range(addr,
-                                                 vga_state.vram_size,
-                                                 TRUE);
-    else if (addr != vga_state.vram_addr)
-        (void) demu_relocate_guest_range(vga_state.vram_addr,
-                                         addr,
-                                         vga_state.vram_size);
     vga_state.vram_addr = addr;
-    vga_state.vram_enabled = TRUE;
+    DBG("%"PRIx64"\n", vga_state.vram_addr);
+
+    vga_state.vram = demu_map_guest_range(vga_state.vram_addr,
+                                          vga_state.vram_size,
+                                          TRUE);
 
     vga_state.lfb_addr = vga_state.vram_addr;
     vga_state.lfb_size = vga_state.vram_size;
@@ -1188,7 +1181,12 @@ vram_bar_disable(void *priv)
     DBG("%"PRIx64"\n", vga_state.vram_addr);
 
     demu_track_dirty_vram(0, 0, NULL);
-    vga_state.vram_enabled = FALSE;
+
+    demu_unmap_guest_range(vga_state.vram,
+                           vga_state.vram_addr,
+                           vga_state.vram_size,
+                           TRUE);
+    vga_state.vram = NULL;
 }
 
 #define MMIO_BAR_VGA_OFFSET 0x400
@@ -1559,7 +1557,7 @@ vga_get_vbe_line_offset(void)
 void
 vga_get_vram_dirty_map(int enable)
 {
-    if (enable && vga_state.vram_enabled)
+    if (enable)
         demu_track_dirty_vram(vga_state.vram_addr >> TARGET_PAGE_SHIFT,
                               vga_state.vram_size >> TARGET_PAGE_SHIFT,
                               vga_state.bitmap);

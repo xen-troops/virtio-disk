@@ -66,11 +66,6 @@ static inline void demu_unmap_guest_page(void *ptr, xen_pfn_t pfn,
 int     demu_unmap_guest_range(void *ptr, uint64_t addr, uint64_t size,
                                int depopulate);
 
-int     demu_relocate_guest_pages(xen_pfn_t old[], xen_pfn_t new[],
-                                  unsigned int n);
-int     demu_relocate_guest_range(uint64_t old, uint64_t new,
-                                  uint64_t size);
-
 void    demu_set_guest_dirty_page(xen_pfn_t pfn);
 void    demu_track_dirty_vram(xen_pfn_t pfn, int n, unsigned long *bitmap);
 
