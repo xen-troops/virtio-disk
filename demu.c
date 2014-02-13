@@ -65,6 +65,7 @@
 
 #include "debug.h"
 #include "mapcache.h"
+#include "ps2.h"
 #include "vga.h"
 #include "pci.h"
 #include "surface.h"
@@ -130,6 +131,7 @@ typedef enum {
     DEMU_SEQ_BUF_PORT_BOUND,
     DEMU_SEQ_VNC_INITIALIZED,
     DEMU_SEQ_VGA_INITIALIZED,
+    DEMU_SEQ_PS2_INITIALIZED,
     DEMU_SEQ_SURFACE_INITIALIZED,
     DEMU_SEQ_INITIALIZED,
     DEMU_NR_SEQS
@@ -173,6 +175,12 @@ typedef struct demu_state {
 #define DEMU_VNC_DEFAULT_DEPTH  4
 
 static demu_state_t demu_state;
+
+void
+demu_set_irq(int irq, int level)
+{
+    xc_hvm_set_isa_irq_level(demu_state.xch, demu_state.domid, irq, level);
+}
 
 void *
 demu_map_guest_pages(xen_pfn_t pfn[], unsigned int n, int populate)
@@ -1005,6 +1013,10 @@ demu_seq_next(void)
         DBG(">VGA_INITIALIZED\n");
         break;
 
+    case DEMU_SEQ_PS2_INITIALIZED:
+        DBG(">PS2_INITIALIZED\n");
+        break;
+
     case DEMU_SEQ_SURFACE_INITIALIZED:
         DBG(">SURFACE_INITIALIZED\n");
         break;
@@ -1031,6 +1043,13 @@ demu_teardown(void)
     if (demu_state.seq == DEMU_SEQ_SURFACE_INITIALIZED) {
         DBG("<SURFACE_INITIALIZED\n");
         surface_teardown();
+
+        demu_state.seq = DEMU_SEQ_PS2_INITIALIZED;
+    }
+
+    if (demu_state.seq == DEMU_SEQ_PS2_INITIALIZED) {
+        DBG("<PS2_INITIALIZED\n");
+        ps2_teardown();
 
         demu_state.seq = DEMU_SEQ_VGA_INITIALIZED;
     }
@@ -1264,9 +1283,15 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     demu_seq_next();
 
-    rc = surface_initialize();
+    rc = ps2_initialize();
     if (rc < 0)
         goto fail13;
+
+    demu_seq_next();
+
+    rc = surface_initialize();
+    if (rc < 0)
+        goto fail14;
 
     demu_seq_next();
 
@@ -1274,6 +1299,9 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     assert(demu_state.seq == DEMU_SEQ_INITIALIZED);
     return 0;
+
+fail14:
+    DBG("fail14\n");
 
 fail13:
     DBG("fail13\n");

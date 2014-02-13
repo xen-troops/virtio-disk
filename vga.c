@@ -1182,10 +1182,11 @@ vram_bar_disable(void *priv)
 
     demu_track_dirty_vram(0, 0, NULL);
 
-    demu_unmap_guest_range(vga_state.vram,
-                           vga_state.vram_addr,
-                           vga_state.vram_size,
-                           TRUE);
+    if (vga_state.vram != NULL)
+        demu_unmap_guest_range(vga_state.vram,
+                               vga_state.vram_addr,
+                               vga_state.vram_size,
+                               TRUE);
     vga_state.vram = NULL;
 }
 
@@ -1324,7 +1325,7 @@ rom_bar_disable(void *priv)
 
 int
 vga_initialize(unsigned int bus, unsigned int device, unsigned int function,
-                  uint64_t vram_size, char *romfile)
+               uint64_t vram_size, char *romfile)
 {
     pci_info_t  info;
     struct stat st;
