@@ -31,6 +31,7 @@
 #define  _PS2_H
 
 int         ps2_initialize(void);
+void        ps2_mouse_event(int dx, int dy, int dz, int lb, int mb, int rb);
 void        ps2_teardown(void);
 
 #endif  /*_PS2_H */

@@ -161,6 +161,8 @@ typedef struct demu_state {
     evtchn_port_t       buf_ioreq_local_port;
     uint32_t            width;
     uint32_t            height;
+    int32_t             x;
+    int32_t             y;
     uint32_t            depth;
     uint8_t             *default_framebuffer;
     uint8_t             *framebuffer;
@@ -804,11 +806,55 @@ demu_handle_ioreq(ioreq_t *ioreq)
 
 static void demu_vnc_mouse(int buttonMask, int x, int y, rfbClientPtr client)
 {
+#if 0
+    int dx, dy, dz;
+    int lb, mb, rb;
+
+    if (demu_state.x == -1)
+        goto done;
+
+    lb = !!(buttonMask & 0x01);
+    mb = !!(buttonMask & 0x02);
+    rb = !!(buttonMask & 0x04);
+
+    dx = x - demu_state.x;
+    dy = y - demu_state.y;
+    dz = 0;
+    
+    if (buttonMask & 0x08)
+        dz = -1;
+    if (buttonMask & 0x10)
+        dz = 1;
+
+    ps2_mouse_event(dx, dy, dz, lb, mb, rb);
+
+done:
+    demu_state.x = x;
+    demu_state.y = y;
+#endif
+
     rfbDefaultPtrAddEvent(buttonMask, x, y, client);
 }
 
 static void demu_vnc_key(rfbBool down, rfbKeySym keySym, rfbClientPtr client)
 {
+    if (!down)
+        return;
+
+    switch (keySym) {
+    case XK_Left:
+        ps2_mouse_event(-10, 0, 0, 0, 0, 0);
+        break;
+    case XK_Right:
+        ps2_mouse_event(10, 0, 0, 0, 0, 0);
+        break;
+    case XK_Up:
+        ps2_mouse_event(0, -10, 0, 0, 0, 0);
+        break;
+    case XK_Down:
+        ps2_mouse_event(0, 10, 0, 0, 0, 0);
+        break;
+    }
 }
 
 static void demu_vnc_remove_client(rfbClientPtr client)
@@ -887,6 +933,9 @@ demu_vnc_initialize(void)
     uint8_t             *framebuffer;
     unsigned int        x, y;
     rfbScreenInfoPtr    screen;
+
+    demu_state.x = -1;
+    demu_state.y = -1;
 
     framebuffer = malloc(DEMU_VNC_DEFAULT_WIDTH *
                          DEMU_VNC_DEFAULT_HEIGHT *

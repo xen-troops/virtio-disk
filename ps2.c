@@ -320,7 +320,9 @@ typedef struct aux {
     int         dx; /* current values, needed for 'poll' mode */
     int         dy;
     int         dz;
-    uint8_t     buttons;
+    int         lb;
+    int         mb;
+    int         rb;
 } aux_t;
 
 static aux_t    aux_state;
@@ -575,11 +577,13 @@ static void
 aux_send_packet(void)
 {
     int dx, dy, dz;
+    uint8_t buttons;
     uint8_t val;
 
     dx = aux_state.dx;
     dy = aux_state.dy;
     dz = aux_state.dz;
+    buttons = (!!aux_state.lb) | (!!aux_state.rb < 1) | (!!aux_state.mb << 2);
 
     DBG("%8d %8d %8d\n", dx, dy, dz);
 
@@ -594,9 +598,9 @@ aux_send_packet(void)
         dy = -127;
 
     val = 0x08 |
-        ((dx < 0) << 4) |
-        ((dy < 0) << 5) |
-        (aux_state.buttons & 0x07);
+        (!!(dx < 0) << 4) |
+        (!!(dy < 0) << 5) |
+        (buttons & 0x07);
 
     aux_putq(val);
     aux_putq(dx & 0xff);
@@ -618,9 +622,7 @@ aux_send_packet(void)
             dz = 7;
         else if (dz < -7)
             dz = -7;
-        val = (dz & 0x0f) |
-            ((aux_state.buttons & 0x18) << 1);
-        aux_putq(val);
+        aux_putq(dz & 0xff);
         break;
     }
 
@@ -718,34 +720,47 @@ aux_write(uint8_t val)
         break;
 
     case AUX_SET_SAMPLE:
-        DBG("sample_rate = %02x\n", val);
-
+        DBG("sample_rate = %d\n", val);
         aux_state.sample_rate = val;
+
         switch(aux_state.detect_state) {
         default:
         case 0:
-            if (val == 200)
+            if (val == 200) {
+                DBG("detect_state -> 1\n");
                 aux_state.detect_state = 1;
+            }
             break;
         case 1:
-            if (val == 100)
+            if (val == 100) {
+                DBG("detect_state -> 2\n");
                 aux_state.detect_state = 2;
-            else if (val == 200)
+            } else if (val == 200) {
+                DBG("detect_state -> 3\n");
                 aux_state.detect_state = 3;
-            else
+            } else {
+                DBG("detect_state -> 0\n");
                 aux_state.detect_state = 0;
+            }
             break;
         case 2:
-            if (val == 80)
+            if (val == 80) {
+                DBG("type -> 3\n");
                 aux_state.type = 3; /* IMPS/2 */
+            }
+            DBG("detect_state -> 0\n");
             aux_state.detect_state = 0;
             break;
         case 3:
-            if (val == 80)
+            if (val == 80) {
+                DBG("type -> 4\n");
                 aux_state.type = 4; /* IMEX */
+            }
+            DBG("detect_state -> 0\n");
             aux_state.detect_state = 0;
             break;
         }
+
         aux_putq(AUX_ACK);
         aux_state.cmd = -1;
         break;
@@ -910,6 +925,33 @@ fail1:
 
     return -1;
 
+}
+
+void
+ps2_mouse_event(int dx, int dy, int dz, int lb, int mb, int rb)
+{
+    if (!(aux_state.status & AUX_STATUS_ENABLED))
+        return;
+
+    DBG("%8d %8d %8d (%01d%01d%01d)\n", dx, dy, dz, lb, mb, rb);
+
+    aux_state.dx += dx;
+    aux_state.dy -= dy;
+    aux_state.dz += dz;
+    aux_state.lb = lb;
+    aux_state.mb = mb;
+    aux_state.rb = rb;
+
+    if (!(aux_state.status & AUX_STATUS_REMOTE) &&
+        (aux_state.queue.count < (PS2_QUEUE_SIZE - 16))) {
+        for (;;) {
+            aux_send_packet();
+            if (aux_state.dx == 0 &&
+                aux_state.dy == 0 &&
+                aux_state.dz == 0)
+                break;
+        }
+    }
 }
 
 void
