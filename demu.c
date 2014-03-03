@@ -43,6 +43,7 @@
 #include <sched.h>
 #include <assert.h>
 #include <inttypes.h>
+#include <pthread.h>
 
 #include <sys/mman.h>
 #include <sys/poll.h>
@@ -133,6 +134,7 @@ typedef enum {
     DEMU_SEQ_VGA_INITIALIZED,
     DEMU_SEQ_PS2_INITIALIZED,
     DEMU_SEQ_SURFACE_INITIALIZED,
+    DEMU_SEQ_THREAD_INITIALIZED,
     DEMU_SEQ_INITIALIZED,
     DEMU_NR_SEQS
 } demu_seq_t;
@@ -149,6 +151,8 @@ struct demu_space {
 
 typedef struct demu_state {
     demu_seq_t          seq;
+    timer_t             timer_id;
+    void                (*tick)(void);
     xc_interface        *xch;
     xc_interface        *xceh;
     domid_t             domid;
@@ -170,6 +174,7 @@ typedef struct demu_state {
     demu_space_t	    *memory;
     demu_space_t        *port;
     demu_space_t        *pci_config;
+    pthread_t           thread;
 } demu_state_t;
 
 #define DEMU_VNC_DEFAULT_WIDTH  640
@@ -806,7 +811,6 @@ demu_handle_ioreq(ioreq_t *ioreq)
 
 static void demu_vnc_mouse(int buttonMask, int x, int y, rfbClientPtr client)
 {
-#if 0
     int dx, dy, dz;
     int lb, mb, rb;
 
@@ -831,30 +835,13 @@ static void demu_vnc_mouse(int buttonMask, int x, int y, rfbClientPtr client)
 done:
     demu_state.x = x;
     demu_state.y = y;
-#endif
 
     rfbDefaultPtrAddEvent(buttonMask, x, y, client);
 }
 
 static void demu_vnc_key(rfbBool down, rfbKeySym keySym, rfbClientPtr client)
 {
-    if (!down)
-        return;
-
-    switch (keySym) {
-    case XK_Left:
-        ps2_mouse_event(-10, 0, 0, 0, 0, 0);
-        break;
-    case XK_Right:
-        ps2_mouse_event(10, 0, 0, 0, 0, 0);
-        break;
-    case XK_Up:
-        ps2_mouse_event(0, -10, 0, 0, 0, 0);
-        break;
-    case XK_Down:
-        ps2_mouse_event(0, 10, 0, 0, 0, 0);
-        break;
-    }
+    DBG("%08X\n", keySym);
 }
 
 static void demu_vnc_remove_client(rfbClientPtr client)
@@ -1070,6 +1057,10 @@ demu_seq_next(void)
         DBG(">SURFACE_INITIALIZED\n");
         break;
 
+    case DEMU_SEQ_THREAD_INITIALIZED:
+        DBG(">THREAD_INITIALIZED\n");
+        break;
+
     case DEMU_SEQ_INITIALIZED:
         DBG(">INITIALIZED\n");
         break;
@@ -1085,6 +1076,14 @@ demu_teardown(void)
 {
     if (demu_state.seq == DEMU_SEQ_INITIALIZED) {
         DBG("<INITIALIZED\n");
+
+        demu_state.seq = DEMU_SEQ_THREAD_INITIALIZED;
+    }
+
+    if (demu_state.seq == DEMU_SEQ_THREAD_INITIALIZED) {
+        DBG("<THREAD_INITIALIZED\n");
+        pthread_cancel(demu_state.thread);
+        pthread_join(demu_state.thread, NULL);
 
         demu_state.seq = DEMU_SEQ_SURFACE_INITIALIZED;
     }
@@ -1222,6 +1221,36 @@ demu_sigusr1(int num)
     pci_device_dump();
 }
 
+static struct sigaction sigrt_handler;
+
+static void
+demu_sigrt(int num, siginfo_t *si, void *arg)
+{
+    int     tfd;
+    char    buf = 'T';
+
+    sigaction(SIGRTMIN, &sigrt_handler, NULL);
+
+    tfd = (intptr_t)si->si_value.sival_ptr;
+    write(tfd, &buf, 1);
+}
+
+static void *
+demu_thread(void *arg)
+{
+    DBG("---->\n");
+
+    for (;;) {
+        if (rfbIsActive(demu_state.screen)) {
+            surface_refresh();
+            rfbProcessEvents(demu_state.screen, -1);
+        }
+    }
+
+    DBG("<----\n");
+    return NULL;
+}
+
 static int
 demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned int function, char *rom)
 {
@@ -1344,10 +1373,19 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     demu_seq_next();
 
+    rc = pthread_create(&demu_state.thread, NULL, demu_thread, NULL);
+    if (rc != 0)
+        goto fail15;
+
+    demu_seq_next();
+
     demu_seq_next();
 
     assert(demu_state.seq == DEMU_SEQ_INITIALIZED);
     return 0;
+
+fail15:
+    DBG("fail15\n");
 
 fail14:
     DBG("fail14\n");
@@ -1499,6 +1537,104 @@ demu_poll_iopages(void)
     }
 }
 
+static int
+demu_timer_create(void)
+{
+    int                 pfd[2];
+    timer_t             tid;
+    struct sigevent     sigev;
+
+    memset(pfd, 0, sizeof (pfd));
+    if (pipe(pfd) < 0)
+        goto fail1;
+
+    sigev.sigev_notify = SIGEV_SIGNAL;
+    sigev.sigev_signo = SIGRTMIN;
+    sigev.sigev_value.sival_ptr = (void *)(intptr_t)pfd[1];
+
+    if (timer_create(CLOCK_MONOTONIC, &sigev, &tid) < 0)
+        goto fail2;
+
+    demu_state.timer_id = tid;
+
+    return pfd[0];
+
+fail2:
+    DBG("fail2\n");
+
+    close(pfd[1]);
+    close(pfd[0]);
+
+fail1:
+    DBG("fail1: %s\n", strerror(errno));
+
+    return -1;
+}
+
+static void
+demu_timer_destroy(void)
+{
+    timer_delete(demu_state.timer_id);
+}
+
+int
+demu_timer_start(unsigned int period, void (*tick)(void))
+{
+    time_t              s;
+    long                ns;
+    struct itimerspec   it;
+
+    s = period / 1000;
+    ns = (period - (s * 1000)) * 1000000;
+
+    it.it_interval.tv_sec = it.it_value.tv_sec = s;
+    it.it_interval.tv_nsec = it.it_value.tv_nsec = ns;
+
+    demu_state.tick = tick;
+
+    if (timer_settime(demu_state.timer_id, 0, &it, NULL) < 0)
+        goto fail1;
+
+    DBG("done: %u ms\n", period);
+
+    return 0;
+
+fail1:
+    DBG("fail1: %s\n", strerror(errno));
+
+    return -1;
+}
+
+void
+demu_timer_tick(void)
+{
+    if (demu_state.tick != NULL)
+        demu_state.tick();  
+}
+
+int
+demu_timer_stop(void)
+{
+    struct itimerspec   it;
+
+    it.it_interval.tv_sec = it.it_value.tv_sec = 0;
+    it.it_interval.tv_nsec = it.it_value.tv_nsec = 0;
+
+    if (timer_settime(demu_state.timer_id, 0, &it, NULL) < 0)
+        goto fail1;
+
+    demu_state.tick = NULL;
+
+    DBG("done\n");
+
+    return 0;
+
+fail1:
+    DBG("fail1: %s\n", strerror(errno));
+
+    return -1;
+}
+
 int
 main(int argc, char **argv, char **envp)
 {
@@ -1511,6 +1647,7 @@ main(int argc, char **argv, char **envp)
     unsigned int    device;
     sigset_t        block;
     int             efd;
+    int             tfd;
     int             rc;
 
     prog = basename(argv[0]);
@@ -1589,7 +1726,18 @@ main(int argc, char **argv, char **envp)
     sigaction(SIGUSR1, &sigusr1_handler, NULL);
     sigdelset(&block, SIGUSR1);
 
+    memset(&sigrt_handler, 0, sizeof (struct sigaction));
+    sigrt_handler.sa_flags = SA_SIGINFO;
+    sigrt_handler.sa_sigaction = demu_sigrt;
+
+    sigaction(SIGRTMIN, &sigrt_handler, NULL);
+    sigdelset(&block, SIGRTMIN);
+
     sigprocmask(SIG_BLOCK, &block, NULL);
+
+    tfd = demu_timer_create();
+    if (tfd < 0)
+        exit(1);
 
     rc = demu_initialize(domid, 0, device, 0, rom_str);
     if (rc < 0) {
@@ -1610,22 +1758,25 @@ main(int argc, char **argv, char **envp)
         FD_ZERO(&wfds);
         FD_ZERO(&xfds);
 
+        FD_SET(tfd, &rfds);
         FD_SET(efd, &rfds);
 
         tv.tv_sec = 0;
         tv.tv_usec = demu_state.screen->deferUpdateTime * 1000;
 
-        nfds = efd + 1;
+        nfds = max(tfd, efd) + 1;
         rc = select(nfds, &rfds, &wfds, &xfds, &tv);
 
         if (rc > 0) {
             if (FD_ISSET(efd, &rfds))
                 demu_poll_iopages();
-        }
 
-        if (rfbIsActive(demu_state.screen)) {
-            surface_refresh();
-            rfbProcessEvents(demu_state.screen, 1000);
+            if (FD_ISSET(tfd, &rfds)) {
+                char   buf;
+
+                read(tfd, &buf, 1);
+                demu_timer_tick();
+            }
         }
 
         if (rc < 0 && errno != EINTR)
@@ -1633,6 +1784,8 @@ main(int argc, char **argv, char **envp)
     }
 
     demu_teardown();
+
+    demu_timer_destroy();
 
     return 0;
 }

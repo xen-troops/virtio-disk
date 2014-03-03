@@ -95,6 +95,7 @@ int         vga_initialize(unsigned int bus, unsigned int device, unsigned int f
 void        vga_teardown(void);
 
 uint8_t     *vga_get_vram(void);
+void        vga_put_vram(void);
 
 uint8_t     vga_get_ar_index(void);
 uint8_t     vga_get_ar(int reg);

@@ -465,7 +465,7 @@ surface_update(uint32_t x, uint32_t y, uint32_t width, uint32_t height)
 }
 
 static void
-surface_draw_text(surface_t *s, int full_update)
+surface_draw_text(surface_t *s, uint8_t *vram, int full_update)
 {
     int cx, cy, cheight, cw, ch, cattr, height, width, ch_attr;
     int cx_min, cx_max, linesize, x_incr;
@@ -477,7 +477,6 @@ surface_draw_text(surface_t *s, int full_update)
     uint32_t *ch_attr_ptr;
     vga_draw_glyph8_func *__vga_draw_glyph8;
     vga_draw_glyph9_func *__vga_draw_glyph9;
-    uint8_t *vram = vga_get_vram();
 
     assert(vram != NULL);
 
@@ -637,7 +636,7 @@ surface_draw_text(surface_t *s, int full_update)
 }
 
 static void
-surface_draw_graphic(surface_t *s, int full_update)
+surface_draw_graphic(surface_t *s, uint8_t *vram, int full_update)
 {
     int y1, y, update, linesize, y_start, double_scan, mask, depth;
     int width, height, shift_control, line_offset, bwidth, bits;
@@ -645,7 +644,6 @@ surface_draw_graphic(surface_t *s, int full_update)
     uint8_t *d;
     uint32_t v, addr1, addr;
     vga_draw_line_func *__vga_draw_line;
-    uint8_t *vram = vga_get_vram();
 
     assert(vram != NULL);
 
@@ -845,7 +843,9 @@ surface_refresh(void)
     surface_t *s = &surface_state;
     int full_update;
     int graphic_mode;
-    uint8_t *vram = vga_get_vram();
+    uint8_t *vram;
+
+    vram = vga_get_vram();
 
     if (!(vga_get_ar_index() & 0x20) || vram == NULL) {
         graphic_mode = GMODE_BLANK;
@@ -874,10 +874,10 @@ surface_refresh(void)
 
     switch(graphic_mode) {
     case GMODE_TEXT:
-        surface_draw_text(s, full_update);
+        surface_draw_text(s, vram, full_update);
         break;
     case GMODE_GRAPHIC:
-        surface_draw_graphic(s, full_update);
+        surface_draw_graphic(s, vram, full_update);
         break;
     case GMODE_BLANK:
     default:
@@ -885,6 +885,7 @@ surface_refresh(void)
         break;
     }
 
+    vga_put_vram();
 }
 
 void

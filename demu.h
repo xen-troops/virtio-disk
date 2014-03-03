@@ -95,6 +95,9 @@ void    demu_new_framebuffer(uint32_t width, uint32_t height, uint32_t depth);
 uint8_t *demu_get_framebuffer(void);
 void    demu_update_framebuffer(uint32_t x, uint32_t y, uint32_t width, uint32_t height);
 
+int     demu_timer_start(unsigned int period, void (*tick)(void));
+int     demu_timer_stop(void);
+
 #endif  /* _DEMU_H */
 
 /*

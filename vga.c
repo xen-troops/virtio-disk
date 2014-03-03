@@ -59,6 +59,7 @@
 #include <inttypes.h>
 #include <unistd.h>
 #include <errno.h>
+#include <pthread.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -138,6 +139,7 @@ typedef struct vga {
     uint64_t        vram_addr;
     uint64_t        vram_size;
     uint8_t         *vram;
+    pthread_mutex_t vram_lock;
     unsigned long   *bitmap;
 
     uint64_t        mmio_addr;
@@ -1161,9 +1163,13 @@ vram_bar_enable(void *priv, uint64_t addr)
     vga_state.vram_addr = addr;
     DBG("%"PRIx64"\n", vga_state.vram_addr);
 
+    pthread_mutex_lock(&vga_state.vram_lock);
+
     vga_state.vram = demu_map_guest_range(vga_state.vram_addr,
                                           vga_state.vram_size,
                                           TRUE);
+
+    pthread_mutex_unlock(&vga_state.vram_lock);
 
     vga_state.lfb_addr = vga_state.vram_addr;
     vga_state.lfb_size = vga_state.vram_size;
@@ -1182,12 +1188,17 @@ vram_bar_disable(void *priv)
 
     demu_track_dirty_vram(0, 0, NULL);
 
-    if (vga_state.vram != NULL)
+    pthread_mutex_lock(&vga_state.vram_lock);
+
+    if (vga_state.vram != NULL) {
         demu_unmap_guest_range(vga_state.vram,
                                vga_state.vram_addr,
                                vga_state.vram_size,
                                TRUE);
-    vga_state.vram = NULL;
+        vga_state.vram = NULL;
+    }
+
+    pthread_mutex_unlock(&vga_state.vram_lock);
 }
 
 #define MMIO_BAR_VGA_OFFSET 0x400
@@ -1363,6 +1374,8 @@ vga_initialize(unsigned int bus, unsigned int device, unsigned int function,
     if (rc < 0)
         goto fail3;
 
+    pthread_mutex_init(&vga_state.vram_lock, NULL);
+
     rc = pci_bar_register(0,
                           PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_PREFETCH,
                           vga_state.vram_size,
@@ -1454,6 +1467,7 @@ fail5:
     DBG("fail5\n");
 
     pci_bar_deregister(0);
+    pthread_mutex_destroy(&vga_state.vram_lock);
 
 fail4:
     DBG("fail4\n");
@@ -1480,7 +1494,14 @@ fail1:
 uint8_t *
 vga_get_vram(void)
 {
+    pthread_mutex_lock(&vga_state.vram_lock);
 	return vga_state.vram;
+}
+
+void
+vga_put_vram(void)
+{
+    pthread_mutex_unlock(&vga_state.vram_lock);
 }
 
 uint8_t
@@ -1594,6 +1615,7 @@ vga_teardown(void)
 
     pci_bar_deregister(2);
     pci_bar_deregister(0);
+    pthread_mutex_destroy(&vga_state.vram_lock);
     pci_device_deregister();
     vga_deregister();
     free(vga_state.bitmap);

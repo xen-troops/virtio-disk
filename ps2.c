@@ -70,6 +70,10 @@
 #include "ps2.h"
 #include "demu.h"
 
+//#define DEBUG_PS2
+#define DEBUG_KBD
+//#define DEBUG_AUX
+
 #define PS2_CMD_READ_MODE	    0x20	/* Read mode bits */
 #define PS2_CMD_WRITE_MODE	    0x60	/* Write mode bits */
 #define PS2_CMD_GET_VERSION	    0xA1	/* Get controller version */
@@ -93,6 +97,7 @@
 #define PS2_CMD_RESET           0xFE    /* Pulse bit 0 of the output port P2 = CPU reset. */
 #define PS2_CMD_NO_OP           0xFF    /* Pulse no bits of the output port P2. */
 
+#ifdef  DEBUG_PS2
 static const char *
 ps2_cmd(uint8_t val)
 {
@@ -130,6 +135,7 @@ ps2_cmd(uint8_t val)
 
 #undef  PS2_CMD
 }
+#endif
 
 #define PS2_STAT_KBD_OBF 		0x01	/* Keyboard output buffer full */
 #define PS2_STAT_KBD_IBF 		0x02	/* Keyboard input buffer full */
@@ -170,6 +176,7 @@ ps2_cmd(uint8_t val)
 #define KBD_RESET_ENABLE   	    0xF6    /* reset and enable scanning */
 #define KBD_RESET		        0xFF	/* Reset */
 
+#ifdef  DEBUG_KBD
 static const char *
 kbd_cmd(uint8_t val)
 {
@@ -195,6 +202,7 @@ kbd_cmd(uint8_t val)
 
 #undef  KBD_CMD
 }
+#endif
 
 #define KBD_REPLY_POR		    0xAA	/* Power on reset */
 #define KBD_REPLY_ID		    0xAB	/* Keyboard ID */
@@ -218,6 +226,7 @@ kbd_cmd(uint8_t val)
 #define AUX_RESET		        0xFF	/* Reset aux device */
 #define AUX_ACK			        0xFA	/* Command byte ACK. */
 
+#ifdef  DEBUG_AUX
 static const char *
 aux_cmd(uint8_t val)
 {
@@ -249,6 +258,7 @@ aux_cmd(uint8_t val)
 
 #undef  AUX_CMD
 }
+#endif
 
 #define AUX_STATUS_REMOTE       0x40
 #define AUX_STATUS_ENABLED      0x20
@@ -323,6 +333,7 @@ typedef struct aux {
     int         lb;
     int         mb;
     int         rb;
+    uint8_t     buttons;
 } aux_t;
 
 static aux_t    aux_state;
@@ -373,7 +384,9 @@ ps2_putq(ps2_queue_t *q, uint8_t val)
 static void
 kbd_putq(uint8_t val)
 {
+#ifdef  DEBUG_KBD
     DBG("%02x\n", val);
+#endif
     
     ps2_putq(&kbd_state.queue, val);
     ps2_state.pending |= PS2_PENDING_KBD;
@@ -383,7 +396,9 @@ kbd_putq(uint8_t val)
 static void
 aux_putq(uint8_t val)
 {
+#ifdef  DEBUG_AUX
     DBG("%02x\n", val);
+#endif
 
     ps2_putq(&aux_state.queue, val);
     ps2_state.pending |= PS2_PENDING_AUX;
@@ -425,6 +440,10 @@ kbd_getq(void)
         ps2_update_irq();
     }
 
+#ifdef  DEBUG_KBD
+    DBG("%02x\n", val);
+#endif
+
     return val;
 }
 
@@ -440,6 +459,10 @@ aux_getq(void)
         ps2_state.pending |= PS2_PENDING_AUX;
         ps2_update_irq();
     }
+
+#ifdef  DEBUG_AUX
+    DBG("%02x\n", val);
+#endif
 
     return val;
 }
@@ -482,12 +505,26 @@ kbd_reset(void)
 }
 
 static void
+kbd_enable(void)
+{
+    kbd_state.scan_enabled = 1;
+}
+
+static void
+kbd_disable(void)
+{
+    kbd_state.scan_enabled = 0;
+}
+
+static void
 kbd_write(uint8_t val)
 {
     switch(kbd_state.cmd) {
     default:
     case -1:
+#ifdef  DEBUG_KBD
         DBG("%s\n", kbd_cmd(val));
+#endif
 
         switch (val) {
         case 0x00:
@@ -509,7 +546,7 @@ kbd_write(uint8_t val)
             kbd_putq(KBD_ECHO);
             break;
         case KBD_ENABLE:
-            kbd_state.scan_enabled = 1;
+            kbd_enable();
             kbd_putq(KBD_REPLY_ACK);
             break;
         case KBD_SCANCODE:
@@ -520,12 +557,11 @@ kbd_write(uint8_t val)
             break;
         case KBD_RESET_DISABLE:
             kbd_reset();
-            kbd_state.scan_enabled = 0;
+            kbd_disable();
             kbd_putq(KBD_REPLY_ACK);
             break;
         case KBD_RESET_ENABLE:
             kbd_reset();
-            kbd_state.scan_enabled = 1;
             kbd_putq(KBD_REPLY_ACK);
             break;
         case KBD_RESET:
@@ -541,7 +577,9 @@ kbd_write(uint8_t val)
 
     case KBD_SCANCODE:
         if (val == 0) {
+#ifdef  DEBUG_KBD
             DBG("get scancode set (%d)\n", kbd_state.scancode_set);
+#endif
             if (kbd_state.scancode_set == 1)
                 kbd_put_keycode(0x43);
             else if (kbd_state.scancode_set == 2)
@@ -550,7 +588,9 @@ kbd_write(uint8_t val)
                 kbd_put_keycode(0x3f);
         } else {
             if (val >= 1 && val <= 3) {
+#ifdef  DEBUG_KBD
                 DBG("set scancode set (%d)\n", val);
+#endif
                 kbd_state.scancode_set = val;
             }
             kbd_putq(KBD_REPLY_ACK);
@@ -559,14 +599,18 @@ kbd_write(uint8_t val)
         break;
 
     case KBD_SET_LEDS:
+#ifdef  DEBUG_KBD
         DBG("ledstate = %02x\n", val);
+#endif
         kbd_state.ledstate = val;
         kbd_putq(KBD_REPLY_ACK);
         kbd_state.cmd = -1;
         break;
 
     case KBD_SET_RATE:
+#ifdef  DEBUG_KBD
         DBG("rate = %02x\n", val);
+#endif
         kbd_putq(KBD_REPLY_ACK);
         kbd_state.cmd = -1;
         break;
@@ -583,9 +627,9 @@ aux_send_packet(void)
     dx = aux_state.dx;
     dy = aux_state.dy;
     dz = aux_state.dz;
-    buttons = (!!aux_state.lb) | (!!aux_state.rb < 1) | (!!aux_state.mb << 2);
-
-    DBG("%8d %8d %8d\n", dx, dy, dz);
+    buttons = (aux_state.lb) | 
+              (aux_state.rb << 1) | 
+              (aux_state.mb << 2);
 
     if (dx > 127)
         dx = 127;
@@ -630,6 +674,61 @@ aux_send_packet(void)
     aux_state.dx -= dx;
     aux_state.dy -= dy;
     aux_state.dz -= dz;
+    aux_state.buttons = buttons;
+}
+
+static void
+aux_tick(void)
+{
+   if (aux_state.status & AUX_STATUS_REMOTE)
+       return;
+
+   if (aux_state.dx != 0 ||
+       aux_state.dy != 0 ||
+       aux_state.dz != 0 ||
+       aux_state.buttons != ((aux_state.lb) |
+                             (aux_state.rb << 1) |
+                             (aux_state.mb << 2)))
+       aux_send_packet();
+}
+
+static void
+aux_enable(void)
+{
+    aux_state.status |= AUX_STATUS_ENABLED;
+
+    if (aux_state.sample_rate != 0)
+        (void) demu_timer_start(1000 / aux_state.sample_rate, aux_tick);
+}
+
+static void
+aux_disable(void)
+{
+    (void) demu_timer_stop();
+    aux_state.status &= ~AUX_STATUS_ENABLED;
+}
+
+static void
+aux_set_sample_rate(uint8_t val)
+{
+#ifdef  DEBUG_AUX
+    DBG("%d\n", val);
+#endif
+    aux_state.sample_rate = val;
+
+    (void) demu_timer_stop();
+
+    if (aux_state.sample_rate != 0)
+        (void) demu_timer_start(1000, aux_tick);
+}
+
+static void
+aux_set_resolution(uint8_t val)
+{
+#ifdef  DEBUG_AUX
+    DBG("%d\n", val);
+#endif
+    aux_state.resolution = val;
 }
 
 static void
@@ -638,7 +737,9 @@ aux_write(uint8_t val)
     switch(aux_state.cmd) {
     default:
     case -1:
+#ifdef  DEBUG_AUX
         DBG("%s\n", aux_cmd(val));
+#endif
 
         /* mouse command */
         if (aux_state.wrap) {
@@ -651,6 +752,7 @@ aux_write(uint8_t val)
                 return;
             }
         }
+
         switch(val) {
         case AUX_SET_SCALE11:
             aux_state.status &= ~AUX_STATUS_SCALE21;
@@ -692,22 +794,22 @@ aux_write(uint8_t val)
             aux_send_packet();
             break;
         case AUX_ENABLE_DEV:
-            aux_state.status |= AUX_STATUS_ENABLED;
+            aux_enable();
             aux_putq(AUX_ACK);
             break;
         case AUX_DISABLE_DEV:
-            aux_state.status &= ~AUX_STATUS_ENABLED;
+            aux_disable();
             aux_putq(AUX_ACK);
             break;
         case AUX_SET_DEFAULT:
-            aux_state.sample_rate = 100;
-            aux_state.resolution = 2;
+            aux_set_sample_rate(100);
+            aux_set_resolution(2);
             aux_state.status = 0;
             aux_putq(AUX_ACK);
             break;
         case AUX_RESET:
-            aux_state.sample_rate = 100;
-            aux_state.resolution = 2;
+            aux_set_sample_rate(100);
+            aux_set_resolution(2);
             aux_state.status = 0;
             aux_state.type = 0;
             aux_putq(AUX_ACK);
@@ -720,43 +822,58 @@ aux_write(uint8_t val)
         break;
 
     case AUX_SET_SAMPLE:
-        DBG("sample_rate = %d\n", val);
-        aux_state.sample_rate = val;
+        aux_set_sample_rate(val);
 
         switch(aux_state.detect_state) {
         default:
         case 0:
             if (val == 200) {
+#ifdef  DEBUG_AUX
                 DBG("detect_state -> 1\n");
+#endif
                 aux_state.detect_state = 1;
             }
             break;
         case 1:
             if (val == 100) {
+#ifdef  DEBUG_AUX
                 DBG("detect_state -> 2\n");
+#endif
                 aux_state.detect_state = 2;
             } else if (val == 200) {
+#ifdef  DEBUG_AUX
                 DBG("detect_state -> 3\n");
+#endif
                 aux_state.detect_state = 3;
             } else {
+#ifdef  DEBUG_AUX
                 DBG("detect_state -> 0\n");
+#endif
                 aux_state.detect_state = 0;
             }
             break;
         case 2:
             if (val == 80) {
+#ifdef  DEBUG_AUX
                 DBG("type -> 3\n");
+#endif
                 aux_state.type = 3; /* IMPS/2 */
             }
+#ifdef  DEBUG_AUX
             DBG("detect_state -> 0\n");
+#endif
             aux_state.detect_state = 0;
             break;
         case 3:
             if (val == 80) {
+#ifdef  DEBUG_AUX
                 DBG("type -> 4\n");
+#endif
                 aux_state.type = 4; /* IMEX */
             }
+#ifdef  DEBUG_AUX
             DBG("detect_state -> 0\n");
+#endif
             aux_state.detect_state = 0;
             break;
         }
@@ -766,9 +883,7 @@ aux_write(uint8_t val)
         break;
 
     case AUX_SET_RES:
-        DBG("resolution = %02x\n", val);
-
-        aux_state.resolution = val;
+        aux_set_resolution(val);
         aux_putq(AUX_ACK);
         aux_state.cmd = -1;
         break;
@@ -787,7 +902,9 @@ ps2_write_data(void *priv, uint64_t addr, uint8_t val)
         kbd_write(val);
         break;
     case PS2_CMD_WRITE_MODE:
+#ifdef  DEBUG_PS2
         DBG("mode = %02x\n", val);
+#endif
         ps2_state.mode = val;
         kbd_state.translate = !!(ps2_state.mode & PS2_MODE_KCC);
         ps2_update_irq();
@@ -799,7 +916,9 @@ ps2_write_data(void *priv, uint64_t addr, uint8_t val)
         aux_putq(val);
         break;
     case PS2_CMD_WRITE_OUTPORT:
+#ifdef  DEBUG_PS2
         DBG("outport = %02x\n", val);
+#endif
         ps2_state.outport = val;
         break;
     case PS2_CMD_WRITE_AUX:
@@ -824,7 +943,9 @@ ps2_read_status(void *priv, uint64_t addr)
 static void
 ps2_write_cmd(void *priv, uint64_t addr, uint8_t val)
 {
+#ifdef  DEBUG_PS2
     DBG("%s\n", ps2_cmd(val));
+#endif
 
     if((val & PS2_CMD_PULSE_BITS_3_0) == PS2_CMD_PULSE_BITS_3_0) {
         if(!(val & 1))
@@ -930,28 +1051,12 @@ fail1:
 void
 ps2_mouse_event(int dx, int dy, int dz, int lb, int mb, int rb)
 {
-    if (!(aux_state.status & AUX_STATUS_ENABLED))
-        return;
-
-    DBG("%8d %8d %8d (%01d%01d%01d)\n", dx, dy, dz, lb, mb, rb);
-
     aux_state.dx += dx;
     aux_state.dy -= dy;
     aux_state.dz += dz;
     aux_state.lb = lb;
     aux_state.mb = mb;
     aux_state.rb = rb;
-
-    if (!(aux_state.status & AUX_STATUS_REMOTE) &&
-        (aux_state.queue.count < (PS2_QUEUE_SIZE - 16))) {
-        for (;;) {
-            aux_send_packet();
-            if (aux_state.dx == 0 &&
-                aux_state.dy == 0 &&
-                aux_state.dz == 0)
-                break;
-        }
-    }
 }
 
 void
