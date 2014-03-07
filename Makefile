@@ -1,6 +1,7 @@
 TARGET = demu
 
 OBJS :=	vga.o \
+	kbd.o \
 	ps2.o \
 	pci.o \
 	mapcache.o \

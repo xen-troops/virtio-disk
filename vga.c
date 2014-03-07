@@ -1339,6 +1339,7 @@ vga_initialize(unsigned int bus, unsigned int device, unsigned int function,
                uint64_t vram_size, char *romfile)
 {
     pci_info_t  info;
+    char        *name;
     struct stat st;
     int         rc;
 
@@ -1401,13 +1402,17 @@ vga_initialize(unsigned int bus, unsigned int device, unsigned int function,
     if (romfile == NULL)
         goto done;
 
-    vga_state.fd = open(romfile, O_RDONLY);
-    if (vga_state.fd < 0)
+    rc = asprintf(&name, "roms/%s", romfile);
+    if (rc < 0)
         goto fail6;
+
+    vga_state.fd = open(name, O_RDONLY);
+    if (vga_state.fd < 0)
+        goto fail7;
 
     rc = fstat(vga_state.fd, &st);
     if (rc < 0)
-        goto fail7;
+        goto fail8;
 
     vga_state.rom_size = P2ROUNDUP(st.st_size, TARGET_PAGE_SIZE);
 
@@ -1420,12 +1425,12 @@ vga_initialize(unsigned int bus, unsigned int device, unsigned int function,
                             vga_state.fd,
                             0);
     if (vga_state.rom == MAP_FAILED)
-        goto fail8;
+        goto fail9;
 
     if (vga_state.rom[0] != 0x55 &&
         vga_state.rom[1] != 0xAA) {
         errno = EINVAL;
-        goto fail9;
+        goto fail10;
     }
 
     rc = pci_bar_register(PCI_ROM_SLOT,
@@ -1435,28 +1440,35 @@ vga_initialize(unsigned int bus, unsigned int device, unsigned int function,
                           rom_bar_disable,
                           NULL);
     if (rc < 0)
-        goto fail10;
+        goto fail11;
+
+    free(name);
 
 done:
     pci_device_dump();
 
     return 0;
 
+fail11:
+    DBG("fail11\n");
+
 fail10:
     DBG("fail10\n");
+
+    munmap(vga_state.rom, vga_state.rom_size);
 
 fail9:
     DBG("fail9\n");
 
-    munmap(vga_state.rom, vga_state.rom_size);
-
 fail8:
     DBG("fail8\n");
+
+    close(vga_state.fd);
 
 fail7:
     DBG("fail7\n");
 
-    close(vga_state.fd);
+    free(name);
 
 fail6:
     DBG("fail6\n");

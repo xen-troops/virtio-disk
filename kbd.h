@@ -27,15 +27,17 @@
  *
  */
 
-#ifndef  _PS2_H
-#define  _PS2_H
+#include <rfb/keysym.h>
 
-int         ps2_initialize(void);
-void        ps2_mouse_event(int dx, int dy, int dz, int lb, int mb, int rb);
-void        ps2_kbd_event(uint8_t keycode);
-void        ps2_teardown(void);
+#ifndef  _KBD_H
+#define  _KBD_H
 
-#endif  /*_PS2_H */
+int     kbd_initialize(const char *name);
+void    kbd_teardown(void);
+
+void    kbd_event(rfbKeySym sym, int down);
+
+#endif  /*_KBD_H */
 
 /*
  * Local variables:

@@ -67,6 +67,7 @@
 #include "debug.h"
 #include "mapcache.h"
 #include "ps2.h"
+#include "kbd.h"
 #include "vga.h"
 #include "pci.h"
 #include "surface.h"
@@ -130,6 +131,7 @@ typedef enum {
     DEMU_SEQ_EVTCHN_OPEN,
     DEMU_SEQ_PORTS_BOUND,
     DEMU_SEQ_BUF_PORT_BOUND,
+    DEMU_SEQ_KBD_INITIALIZED,
     DEMU_SEQ_VNC_INITIALIZED,
     DEMU_SEQ_VGA_INITIALIZED,
     DEMU_SEQ_PS2_INITIALIZED,
@@ -839,9 +841,9 @@ done:
     rfbDefaultPtrAddEvent(buttonMask, x, y, client);
 }
 
-static void demu_vnc_key(rfbBool down, rfbKeySym keySym, rfbClientPtr client)
+static void demu_vnc_key(rfbBool down, rfbKeySym sym, rfbClientPtr client)
 {
-    DBG("%08X\n", keySym);
+    kbd_event(sym, down);
 }
 
 static void demu_vnc_remove_client(rfbClientPtr client)
@@ -1041,6 +1043,10 @@ demu_seq_next(void)
             demu_state.buf_ioreq_local_port);
         break;
 
+    case DEMU_SEQ_KBD_INITIALIZED:
+        DBG(">KBD_INITIALIZED\n");
+        break;
+
     case DEMU_SEQ_VNC_INITIALIZED:
         DBG(">VNC_INITIALIZED\n");
         break;
@@ -1112,6 +1118,13 @@ demu_teardown(void)
     if (demu_state.seq == DEMU_SEQ_VNC_INITIALIZED) {
         DBG("<VNC_INITIALIZED\n");
         demu_vnc_teardown();
+
+        demu_state.seq = DEMU_SEQ_KBD_INITIALIZED;
+    }
+
+    if (demu_state.seq == DEMU_SEQ_KBD_INITIALIZED) {
+        DBG("<KBD_INITIALIZED\n");
+        kbd_teardown();
 
         demu_state.seq = DEMU_SEQ_PORTS_BOUND;
     }
@@ -1347,9 +1360,15 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     demu_seq_next();
 
-    rc = demu_vnc_initialize();
+    rc = kbd_initialize("en-us");
     if (rc < 0)
         goto fail11;
+
+    demu_seq_next();
+
+    rc = demu_vnc_initialize();
+    if (rc < 0)
+        goto fail12;
 
     demu_seq_next();
 
@@ -1357,25 +1376,25 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
                         DEMU_VRAM_SIZE,
                         (rom) ? rom : DEMU_ROM_FILE);
     if (rc < 0)
-        goto fail12;
+        goto fail13;
 
     demu_seq_next();
 
     rc = ps2_initialize();
     if (rc < 0)
-        goto fail13;
+        goto fail14;
 
     demu_seq_next();
 
     rc = surface_initialize();
     if (rc < 0)
-        goto fail14;
+        goto fail15;
 
     demu_seq_next();
 
     rc = pthread_create(&demu_state.thread, NULL, demu_thread, NULL);
     if (rc != 0)
-        goto fail15;
+        goto fail16;
 
     demu_seq_next();
 
@@ -1383,6 +1402,9 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     assert(demu_state.seq == DEMU_SEQ_INITIALIZED);
     return 0;
+
+fail16:
+    DBG("fail16\n");
 
 fail15:
     DBG("fail15\n");

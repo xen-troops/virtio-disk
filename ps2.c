@@ -71,7 +71,7 @@
 #include "demu.h"
 
 //#define DEBUG_PS2
-#define DEBUG_KBD
+//#define DEBUG_KBD
 //#define DEBUG_AUX
 
 #define PS2_CMD_READ_MODE	    0x20	/* Read mode bits */
@@ -483,6 +483,9 @@ ps2_read_data(void *priv, uint64_t addr)
 static void
 kbd_put_keycode(uint8_t keycode)
 {
+    if (!kbd_state.scan_enabled)
+        return;
+
     if (!kbd_state.translate &&
         keycode < 0xe0 &&
         kbd_state.scancode_set > 1) {
@@ -493,6 +496,7 @@ kbd_put_keycode(uint8_t keycode)
         else if (kbd_state.scancode_set == 3)
             keycode = ps2_raw_keycode_set3[keycode & 0x7f];
     }
+
     kbd_putq(keycode);
 }
 
@@ -1057,6 +1061,12 @@ ps2_mouse_event(int dx, int dy, int dz, int lb, int mb, int rb)
     aux_state.lb = lb;
     aux_state.mb = mb;
     aux_state.rb = rb;
+}
+
+void
+ps2_kbd_event(uint8_t keycode)
+{
+    kbd_put_keycode(keycode);
 }
 
 void
