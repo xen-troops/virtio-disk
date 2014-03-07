@@ -80,11 +80,13 @@
 
 #define DEMU_VRAM_SIZE  0x01000000
 #define DEMU_ROM_FILE   "vgabios-stdvga.bin"
+#define DEMU_KEYMAP     "en-us"
 
 enum {
     DEMU_OPT_DOMAIN,
     DEMU_OPT_DEVICE,
     DEMU_OPT_ROM,
+    DEMU_OPT_KEYMAP,
     DEMU_NR_OPTS
     };
 
@@ -92,6 +94,7 @@ static struct option demu_option[] = {
     {"domain", 1, NULL, 0},
     {"device", 1, NULL, 0},
     {"rom", 1, NULL, 0},
+    {"keymap", 1, NULL, 0},
     {NULL, 0, NULL, 0}
 };
 
@@ -99,6 +102,7 @@ static const char *demu_option_text[] = {
     "<domid>",
     "<device>",
     "<rom image>",
+    "<map>",
     NULL
 };
 
@@ -1265,7 +1269,7 @@ demu_thread(void *arg)
 }
 
 static int
-demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned int function, char *rom)
+demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned int function, char *keymap, char *rom_file)
 {
     int             rc;
     xc_dominfo_t    dominfo;
@@ -1360,7 +1364,7 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     demu_seq_next();
 
-    rc = kbd_initialize("en-us");
+    rc = kbd_initialize((keymap) ? keymap : DEMU_KEYMAP);
     if (rc < 0)
         goto fail11;
 
@@ -1374,7 +1378,7 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     rc = vga_initialize(bus, device, function,
                         DEMU_VRAM_SIZE,
-                        (rom) ? rom : DEMU_ROM_FILE);
+                        (rom_file) ? rom_file : DEMU_ROM_FILE);
     if (rc < 0)
         goto fail13;
 
@@ -1663,6 +1667,7 @@ main(int argc, char **argv, char **envp)
     char            *domain_str;
     char            *device_str;
     char            *rom_str;
+    char            *keymap_str;
     int             index;
     char            *end;
     domid_t         domid;
@@ -1677,6 +1682,7 @@ main(int argc, char **argv, char **envp)
     domain_str = NULL;
     device_str = NULL;
     rom_str = NULL;
+    keymap_str = NULL;
 
     for (;;) {
         char    c;
@@ -1699,6 +1705,10 @@ main(int argc, char **argv, char **envp)
 
         case DEMU_OPT_ROM:
             rom_str = optarg;
+            break;
+
+        case DEMU_OPT_KEYMAP:
+            keymap_str = optarg;
             break;
 
         default:
@@ -1761,7 +1771,7 @@ main(int argc, char **argv, char **envp)
     if (tfd < 0)
         exit(1);
 
-    rc = demu_initialize(domid, 0, device, 0, rom_str);
+    rc = demu_initialize(domid, 0, device, 0, keymap_str, rom_str);
     if (rc < 0) {
         demu_teardown();
         exit(1);
