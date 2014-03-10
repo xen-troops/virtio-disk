@@ -68,6 +68,7 @@
 #include "mapcache.h"
 #include "ps2.h"
 #include "kbd.h"
+#include "mouse.h"
 #include "vga.h"
 #include "pci.h"
 #include "surface.h"
@@ -135,7 +136,9 @@ typedef enum {
     DEMU_SEQ_EVTCHN_OPEN,
     DEMU_SEQ_PORTS_BOUND,
     DEMU_SEQ_BUF_PORT_BOUND,
+    DEMU_SEQ_CMD_INITIALIZED,
     DEMU_SEQ_KBD_INITIALIZED,
+    DEMU_SEQ_MOUSE_INITIALIZED,
     DEMU_SEQ_VNC_INITIALIZED,
     DEMU_SEQ_VGA_INITIALIZED,
     DEMU_SEQ_PS2_INITIALIZED,
@@ -155,10 +158,27 @@ struct demu_space {
     void		    *priv;
 };
 
+struct demu_kbd_cmd {
+    char        cmd;
+    rfbKeySym   sym;
+    int         down;
+};
+
+struct demu_mouse_cmd {
+    char    cmd;
+    int     x;
+    int     y;
+    int     buttons;
+};
+
+#define MAX_CMDLEN  (__max(sizeof (struct demu_mouse_cmd), \
+                           sizeof (struct demu_kbd_cmd)))
+
 typedef struct demu_state {
     demu_seq_t          seq;
     timer_t             timer_id;
     void                (*tick)(void);
+    int                 cmd[2];
     xc_interface        *xch;
     xc_interface        *xceh;
     domid_t             domid;
@@ -171,8 +191,6 @@ typedef struct demu_state {
     evtchn_port_t       buf_ioreq_local_port;
     uint32_t            width;
     uint32_t            height;
-    int32_t             x;
-    int32_t             y;
     uint32_t            depth;
     uint8_t             *default_framebuffer;
     uint8_t             *framebuffer;
@@ -817,37 +835,27 @@ demu_handle_ioreq(ioreq_t *ioreq)
 
 static void demu_vnc_mouse(int buttonMask, int x, int y, rfbClientPtr client)
 {
-    int dx, dy, dz;
-    int lb, mb, rb;
+    struct demu_mouse_cmd   cmd;
 
-    if (demu_state.x == -1)
-        goto done;
+    cmd.cmd = 'M';
+    cmd.x = x;
+    cmd.y = y;
+    cmd.buttons = buttonMask;
 
-    lb = !!(buttonMask & 0x01);
-    mb = !!(buttonMask & 0x02);
-    rb = !!(buttonMask & 0x04);
-
-    dx = x - demu_state.x;
-    dy = y - demu_state.y;
-    dz = 0;
-    
-    if (buttonMask & 0x08)
-        dz = -1;
-    if (buttonMask & 0x10)
-        dz = 1;
-
-    ps2_mouse_event(dx, dy, dz, lb, mb, rb);
-
-done:
-    demu_state.x = x;
-    demu_state.y = y;
+    write(demu_state.cmd[1], &cmd, sizeof (cmd));
 
     rfbDefaultPtrAddEvent(buttonMask, x, y, client);
 }
 
 static void demu_vnc_key(rfbBool down, rfbKeySym sym, rfbClientPtr client)
 {
-    kbd_event(sym, down);
+    struct demu_kbd_cmd     cmd;
+
+    cmd.cmd = 'K';
+    cmd.sym = sym;
+    cmd.down = down;
+
+    write(demu_state.cmd[1], &cmd, sizeof (cmd));
 }
 
 static void demu_vnc_remove_client(rfbClientPtr client)
@@ -926,9 +934,6 @@ demu_vnc_initialize(void)
     uint8_t             *framebuffer;
     unsigned int        x, y;
     rfbScreenInfoPtr    screen;
-
-    demu_state.x = -1;
-    demu_state.y = -1;
 
     framebuffer = malloc(DEMU_VNC_DEFAULT_WIDTH *
                          DEMU_VNC_DEFAULT_HEIGHT *
@@ -1047,8 +1052,16 @@ demu_seq_next(void)
             demu_state.buf_ioreq_local_port);
         break;
 
+    case DEMU_SEQ_CMD_INITIALIZED:
+        DBG(">CMD_INITIALIZED\n");
+        break;
+
     case DEMU_SEQ_KBD_INITIALIZED:
         DBG(">KBD_INITIALIZED\n");
+        break;
+
+    case DEMU_SEQ_MOUSE_INITIALIZED:
+        DBG(">MOUSE_INITIALIZED\n");
         break;
 
     case DEMU_SEQ_VNC_INITIALIZED:
@@ -1126,9 +1139,25 @@ demu_teardown(void)
         demu_state.seq = DEMU_SEQ_KBD_INITIALIZED;
     }
 
+    if (demu_state.seq == DEMU_SEQ_MOUSE_INITIALIZED) {
+        DBG("<MOUSE_INITIALIZED\n");
+        mouse_teardown();
+
+        demu_state.seq = DEMU_SEQ_KBD_INITIALIZED;
+    }
+
     if (demu_state.seq == DEMU_SEQ_KBD_INITIALIZED) {
         DBG("<KBD_INITIALIZED\n");
         kbd_teardown();
+
+        demu_state.seq = DEMU_SEQ_CMD_INITIALIZED;
+    }
+
+    if (demu_state.seq == DEMU_SEQ_CMD_INITIALIZED) {
+        DBG("<CMD_INITIALIZED\n");
+
+        close(demu_state.cmd[1]);
+        close(demu_state.cmd[0]);
 
         demu_state.seq = DEMU_SEQ_PORTS_BOUND;
     }
@@ -1364,15 +1393,26 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     demu_seq_next();
 
+    if (pipe(demu_state.cmd) < 0)
+        goto fail11;
+
+    demu_seq_next();
+
     rc = kbd_initialize((keymap) ? keymap : DEMU_KEYMAP);
     if (rc < 0)
-        goto fail11;
+        goto fail12;
+
+    demu_seq_next();
+
+    rc = mouse_initialize();
+    if (rc < 0)
+        goto fail13;
 
     demu_seq_next();
 
     rc = demu_vnc_initialize();
     if (rc < 0)
-        goto fail12;
+        goto fail14;
 
     demu_seq_next();
 
@@ -1380,25 +1420,25 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
                         DEMU_VRAM_SIZE,
                         (rom_file) ? rom_file : DEMU_ROM_FILE);
     if (rc < 0)
-        goto fail13;
+        goto fail15;
 
     demu_seq_next();
 
     rc = ps2_initialize();
     if (rc < 0)
-        goto fail14;
+        goto fail16;
 
     demu_seq_next();
 
     rc = surface_initialize();
     if (rc < 0)
-        goto fail15;
+        goto fail17;
 
     demu_seq_next();
 
     rc = pthread_create(&demu_state.thread, NULL, demu_thread, NULL);
     if (rc != 0)
-        goto fail16;
+        goto fail18;
 
     demu_seq_next();
 
@@ -1406,6 +1446,12 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     assert(demu_state.seq == DEMU_SEQ_INITIALIZED);
     return 0;
+
+fail18:
+    DBG("fail18\n");
+
+fail17:
+    DBG("fail17\n");
 
 fail16:
     DBG("fail16\n");
@@ -1675,6 +1721,7 @@ main(int argc, char **argv, char **envp)
     sigset_t        block;
     int             efd;
     int             tfd;
+    int             cfd;
     int             rc;
 
     prog = basename(argv[0]);
@@ -1779,6 +1826,8 @@ main(int argc, char **argv, char **envp)
 
     efd = xc_evtchn_fd(demu_state.xceh);
 
+    cfd = demu_state.cmd[0];
+        
     for (;;) {
         fd_set          rfds;
         fd_set          wfds;
@@ -1792,11 +1841,12 @@ main(int argc, char **argv, char **envp)
 
         FD_SET(tfd, &rfds);
         FD_SET(efd, &rfds);
+        FD_SET(cfd, &rfds);
 
         tv.tv_sec = 0;
         tv.tv_usec = demu_state.screen->deferUpdateTime * 1000;
 
-        nfds = max(tfd, efd) + 1;
+        nfds = __max(tfd, (__max(efd, cfd))) + 1;
         rc = select(nfds, &rfds, &wfds, &xfds, &tv);
 
         if (rc > 0) {
@@ -1804,10 +1854,42 @@ main(int argc, char **argv, char **envp)
                 demu_poll_iopages();
 
             if (FD_ISSET(tfd, &rfds)) {
-                char   buf;
+                char    buf;
 
-                read(tfd, &buf, 1);
+                (void) read(tfd, &buf, 1);
                 demu_timer_tick();
+            }
+
+            if (FD_ISSET(cfd, &rfds)) {
+                char    buf[MAX_CMDLEN];
+                ssize_t len;
+
+                len = read(cfd, buf, MAX_CMDLEN);
+                if (len > 0) {
+                    switch (buf[0]) {
+                    case 'K': {
+                        struct demu_kbd_cmd *cmd;
+
+                        assert(len >= sizeof (struct demu_kbd_cmd));
+                        cmd = (struct demu_kbd_cmd *)&buf[0];
+
+                        kbd_event(cmd->sym, cmd->down);
+                        break;
+                    }
+                    case 'M': {
+                        struct demu_mouse_cmd *cmd;
+
+                        assert(len >= sizeof (struct demu_mouse_cmd));
+                        cmd = (struct demu_mouse_cmd *)&buf[0];
+
+                        mouse_event(cmd->x, cmd->y, cmd->buttons);
+                        break;
+                    }
+                    default:
+                        assert(FALSE);
+                        break;
+                    }
+                }
             }
         }
 
