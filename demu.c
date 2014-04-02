@@ -132,6 +132,7 @@ typedef enum {
     DEMU_SEQ_SERVER_REGISTERED,
     DEMU_SEQ_SHARED_IOPAGE_MAPPED,
     DEMU_SEQ_BUFFERED_IOPAGE_MAPPED,
+    DEMU_SEQ_SERVER_ENABLED,
     DEMU_SEQ_PORT_ARRAY_ALLOCATED,
     DEMU_SEQ_EVTCHN_OPEN,
     DEMU_SEQ_PORTS_BOUND,
@@ -362,21 +363,42 @@ demu_find_space(demu_space_t *head, uint64_t addr)
 }
 
 static demu_space_t *
-demu_find_pci_config_space(uint8_t bdf)
+demu_find_pci_config_space(uint32_t sbdf)
 {
-    return demu_find_space(demu_state.pci_config, bdf);
+    demu_space_t    *space;
+
+    space = demu_find_space(demu_state.pci_config, sbdf);
+
+    if (space == NULL)
+        DBG("failed to find space for 0x%x\n", sbdf);
+
+    return space;
 }
 
 static demu_space_t *
 demu_find_port_space(uint64_t addr)
 {
-    return demu_find_space(demu_state.port, addr);
+    demu_space_t    *space;
+
+    space = demu_find_space(demu_state.port, addr);
+
+    if (space == NULL)
+        DBG("failed to find space for 0x%"PRIx64"\n", addr);
+
+    return space;
 }
 
 static demu_space_t *
 demu_find_memory_space(uint64_t addr)
 {
-    return demu_find_space(demu_state.memory, addr);
+    demu_space_t    *space;
+
+    space = demu_find_space(demu_state.memory, addr);
+
+    if (space == NULL)
+        DBG("failed to find space for 0x%"PRIx64"\n", addr);
+
+    return space;
 }
 
 static int
@@ -412,7 +434,7 @@ fail1:
 }
 
 static void
-demu_deregister_space(demu_space_t **headp, uint64_t start)
+demu_deregister_space(demu_space_t **headp, uint64_t start, uint64_t *end)
 {
     demu_space_t    **spacep;
     demu_space_t    *space;
@@ -421,6 +443,8 @@ demu_deregister_space(demu_space_t **headp, uint64_t start)
     while ((space = *spacep) != NULL) {
         if (start == space->start) {
             *spacep = space->next;
+            if (end != NULL)
+                *end = space->end;
             free(space);
             return;
         }
@@ -432,19 +456,19 @@ int
 demu_register_pci_config_space(uint8_t bus, uint8_t device, uint8_t function,
                                const io_ops_t *ops, void *priv)
 {
-    uint16_t    bdf;
+    uint32_t    sbdf;
     int         rc;
 
     DBG("%02x:%02x:%02x\n", bus, device, function);
 
-    bdf = (bus << 8) | (device << 3) | function;
+    sbdf = (bus << 8) | (device << 3) | function;
 
-    rc = demu_register_space(&demu_state.pci_config, bdf, bdf, ops, priv);
+    rc = demu_register_space(&demu_state.pci_config, sbdf, sbdf, ops, priv);
     if (rc < 0)
         goto fail1;
 
     rc = xc_hvm_map_pcidev_to_ioreq_server(demu_state.xch, demu_state.domid, demu_state.ioservid,
-                                           bdf);
+                                           0, bus, device, function);
     if (rc < 0)
         goto fail2;
 
@@ -453,7 +477,7 @@ demu_register_pci_config_space(uint8_t bus, uint8_t device, uint8_t function,
 fail2:
     DBG("fail2\n");
 
-    demu_deregister_space(&demu_state.pci_config, bdf);
+    demu_deregister_space(&demu_state.pci_config, sbdf, NULL);
 
 fail1:
     DBG("fail1\n");
@@ -483,7 +507,7 @@ demu_register_port_space(uint64_t start, uint64_t size, const io_ops_t *ops, voi
 fail2:
     DBG("fail2\n");
 
-    demu_deregister_space(&demu_state.port, start);
+    demu_deregister_space(&demu_state.port, start, NULL);
 
 fail1:
     DBG("fail1\n");
@@ -513,7 +537,7 @@ demu_register_memory_space(uint64_t start, uint64_t size, const io_ops_t *ops, v
 fail2:
     DBG("fail2\n");
 
-    demu_deregister_space(&demu_state.memory, start);
+    demu_deregister_space(&demu_state.memory, start, NULL);
 
 fail1:
     DBG("fail1\n");
@@ -525,35 +549,42 @@ fail1:
 void
 demu_deregister_pci_config_space(uint8_t bus, uint8_t device, uint8_t function)
 {
-    uint16_t    bdf;
+    uint32_t    sbdf;
 
     DBG("%02x:%02x:%02x\n", bus, device, function);
 
-    bdf = (bus << 8) | (device << 3) | function;
+    sbdf = (bus << 8) | (device << 3) | function;
+
+    demu_deregister_space(&demu_state.pci_config, sbdf, NULL);
 
     xc_hvm_unmap_pcidev_from_ioreq_server(demu_state.xch, demu_state.domid, demu_state.ioservid,
-                                          bdf);
-    demu_deregister_space(&demu_state.pci_config, bdf);
+                                          0, bus, device, function);
 }
 
 void
 demu_deregister_port_space(uint64_t start)
 {
+    uint64_t end;
+
     DBG("%"PRIx64"\n", start);
 
+    demu_deregister_space(&demu_state.port, start, &end);
+
     xc_hvm_unmap_io_range_from_ioreq_server(demu_state.xch, demu_state.domid, demu_state.ioservid,
-                                            0, start);
-    demu_deregister_space(&demu_state.port, start);
+                                            0, start, end);
 }
 
 void
 demu_deregister_memory_space(uint64_t start)
 {
+    uint64_t end;
+
     DBG("%"PRIx64"\n", start);
 
+    demu_deregister_space(&demu_state.memory, start, &end);
+
     xc_hvm_unmap_io_range_from_ioreq_server(demu_state.xch, demu_state.domid, demu_state.ioservid,
-                                            1, start);
-    demu_deregister_space(&demu_state.memory, start);
+                                            1, start, end);
 }
 
 #define DEMU_IO_READ(_fn, _priv, _addr, _size, _count, _val)        \
@@ -808,15 +839,13 @@ demu_handle_ioreq(ioreq_t *ioreq)
         break;
 
     case IOREQ_TYPE_PCI_CONFIG: {
-        uint16_t    bdf;
+        uint32_t    sbdf;
 
-        bdf = (uint16_t)(ioreq->addr >> 8);
+        sbdf = (uint32_t)(ioreq->addr >> 32);
 
-        ioreq->addr &= 0xff;
-        ioreq->addr += ioreq->size >> 16;
-        ioreq->size &= 0xffff;
+        ioreq->addr &= 0xffffffff;
 
-        space = demu_find_pci_config_space(bdf);
+        space = demu_find_pci_config_space(sbdf);
         demu_handle_io(space, ioreq, FALSE);
         break;
     }
@@ -1084,6 +1113,10 @@ demu_seq_next(void)
         DBG(">THREAD_INITIALIZED\n");
         break;
 
+    case DEMU_SEQ_SERVER_ENABLED:
+        DBG(">SERVER_ENABLED\n");
+        break;
+
     case DEMU_SEQ_INITIALIZED:
         DBG(">INITIALIZED\n");
         break;
@@ -1206,6 +1239,16 @@ demu_teardown(void)
 
         free(demu_state.ioreq_local_port);
 
+        demu_state.seq = DEMU_SEQ_SERVER_ENABLED;
+    }
+
+    if (demu_state.seq == DEMU_SEQ_SERVER_ENABLED) {
+        DBG("<SERVER_ENABLED\n");
+        (void) xc_hvm_set_ioreq_server_state(demu_state.xch,
+                                             demu_state.domid,
+                                             demu_state.ioservid,
+                                             0);
+
         demu_state.seq = DEMU_SEQ_BUFFERED_IOPAGE_MAPPED;
     }
 
@@ -1324,7 +1367,8 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     DBG("%d vCPU(s)\n", demu_state.vcpus);
 
-    rc = xc_hvm_create_ioreq_server(demu_state.xch, demu_state.domid, &demu_state.ioservid);
+    rc = xc_hvm_create_ioreq_server(demu_state.xch, demu_state.domid, 1,
+                                    &demu_state.ioservid);
     if (rc < 0)
         goto fail3;
     
@@ -1355,10 +1399,19 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     demu_seq_next();
 
+    rc = xc_hvm_set_ioreq_server_state(demu_state.xch,
+                                       demu_state.domid,
+                                       demu_state.ioservid,
+                                       1);
+    if (rc != 0)
+        goto fail7;
+
+    demu_seq_next();
+
     demu_state.ioreq_local_port = malloc(sizeof (evtchn_port_t) *
                                          demu_state.vcpus);
     if (demu_state.ioreq_local_port == NULL)
-        goto fail7;
+        goto fail8;
 
     for (i = 0; i < demu_state.vcpus; i++)
         demu_state.ioreq_local_port[i] = -1;
@@ -1367,7 +1420,7 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     demu_state.xceh = xc_evtchn_open(NULL, 0);
     if (demu_state.xceh == NULL)
-        goto fail8;
+        goto fail9;
 
     demu_seq_next();
 
@@ -1377,7 +1430,7 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
         rc = xc_evtchn_bind_interdomain(demu_state.xceh, demu_state.domid,
                                         port);
         if (rc < 0)
-            goto fail9;
+            goto fail10;
 
         demu_state.ioreq_local_port[i] = rc;
     }
@@ -1387,32 +1440,32 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
     rc = xc_evtchn_bind_interdomain(demu_state.xceh, demu_state.domid,
                                     buf_port);
     if (rc < 0)
-        goto fail10;
+        goto fail11;
 
     demu_state.buf_ioreq_local_port = rc;
 
     demu_seq_next();
 
     if (pipe(demu_state.cmd) < 0)
-        goto fail11;
+        goto fail12;
 
     demu_seq_next();
 
     rc = kbd_initialize((keymap) ? keymap : DEMU_KEYMAP);
     if (rc < 0)
-        goto fail12;
+        goto fail13;
 
     demu_seq_next();
 
     rc = mouse_initialize();
     if (rc < 0)
-        goto fail13;
+        goto fail14;
 
     demu_seq_next();
 
     rc = demu_vnc_initialize();
     if (rc < 0)
-        goto fail14;
+        goto fail15;
 
     demu_seq_next();
 
@@ -1420,25 +1473,25 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
                         DEMU_VRAM_SIZE,
                         (rom_file) ? rom_file : DEMU_ROM_FILE);
     if (rc < 0)
-        goto fail15;
+        goto fail16;
 
     demu_seq_next();
 
     rc = ps2_initialize();
     if (rc < 0)
-        goto fail16;
+        goto fail17;
 
     demu_seq_next();
 
     rc = surface_initialize();
     if (rc < 0)
-        goto fail17;
+        goto fail18;
 
     demu_seq_next();
 
     rc = pthread_create(&demu_state.thread, NULL, demu_thread, NULL);
     if (rc != 0)
-        goto fail18;
+        goto fail19;
 
     demu_seq_next();
 
@@ -1446,6 +1499,9 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     assert(demu_state.seq == DEMU_SEQ_INITIALIZED);
     return 0;
+
+fail19:
+    DBG("fail19\n");
 
 fail18:
     DBG("fail18\n");
@@ -1738,9 +1794,13 @@ main(int argc, char **argv, char **envp)
         if (c == -1)
             break;
 
+        if (c != 0) {
+            usage();
+            /*NOTREACHED*/
+        }
+
         DBG("--%s = '%s'\n", demu_option[index].name, optarg);
 
-        assert(c == 0);
         switch (index) {
         case DEMU_OPT_DOMAIN:
             domain_str = optarg;
