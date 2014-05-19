@@ -1086,11 +1086,11 @@ vga_register(void)
     vga_state.vbe_regs[VBE_DISPI_INDEX_ID] = VBE_DISPI_ID0;
     vga_state.vbe_bank_mask = ((vga_state.vram_size >> 16) - 1);
 
-    rc = demu_register_port_space(0x1ce, 2, &vbe_port_ops, NULL);
+    rc = demu_register_port_space(0x1ce, 4, &vbe_port_ops, NULL);
     if (rc < 0)
         goto fail6;
 
-    rc = demu_register_port_space(0xff80, 2, &vbe_port_ops, NULL);
+    rc = demu_register_port_space(0xff80, 4, &vbe_port_ops, NULL);
     if (rc < 0)
         goto fail7;
 

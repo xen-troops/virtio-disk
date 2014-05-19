@@ -268,6 +268,12 @@ pci_bar_register(unsigned int index, uint8_t type, uint64_t size,
     uint32_t    mask;
     uint8_t     offset;
 
+    if ((size & (size - 1)) != 0) {
+        int         n = __builtin_clzl(size);
+
+        size = 1ul << (64 - n);
+    }
+
     DBG("%d: %"PRIx64"\n", index, size);
 
     if (index >= PCI_NUM_BAR)
