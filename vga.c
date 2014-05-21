@@ -883,8 +883,15 @@ vbe_index_write(void *priv, uint16_t val)
 static void
 __clear_vram(uint64_t size)
 {
-    if (vga_state.vram != NULL)
+    if (vga_state.vram != NULL) {
+        uint64_t addr;
+
         memset(vga_state.vram, 0, size);
+
+        for (addr = 0; addr < size; addr += TARGET_PAGE_SIZE)
+            demu_set_guest_dirty_page((vga_state.vram_addr + addr) >> TARGET_PAGE_SHIFT);
+    }
+
 }
 
 static void
