@@ -181,7 +181,7 @@ typedef struct demu_state {
     void                (*tick)(void);
     int                 cmd[2];
     xc_interface        *xch;
-    xc_interface        *xceh;
+    xc_evtchn           *xceh;
     domid_t             domid;
     unsigned int        vcpus;
     ioservid_t          ioservid;
