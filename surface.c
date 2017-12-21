@@ -288,45 +288,6 @@ static const uint32_t mask16[16] = {
 
 #undef PAT
 
-#define cbswap_32(__x) \
-((uint32_t)( \
-		(((uint32_t)(__x) & (uint32_t)0x000000ffUL) << 24) | \
-		(((uint32_t)(__x) & (uint32_t)0x0000ff00UL) <<  8) | \
-		(((uint32_t)(__x) & (uint32_t)0x00ff0000UL) >>  8) | \
-		(((uint32_t)(__x) & (uint32_t)0xff000000UL) >> 24) ))
-
-#define PAT(x) cbswap_32(x)
-
-static const uint32_t dmask16[16] = {
-    PAT(0x00000000),
-    PAT(0x000000ff),
-    PAT(0x0000ff00),
-    PAT(0x0000ffff),
-    PAT(0x00ff0000),
-    PAT(0x00ff00ff),
-    PAT(0x00ffff00),
-    PAT(0x00ffffff),
-    PAT(0xff000000),
-    PAT(0xff0000ff),
-    PAT(0xff00ff00),
-    PAT(0xff00ffff),
-    PAT(0xffff0000),
-    PAT(0xffff00ff),
-    PAT(0xffffff00),
-    PAT(0xffffffff),
-};
-
-static const uint32_t dmask4[4] = {
-    PAT(0x00000000),
-    PAT(0x0000ffff),
-    PAT(0xffff0000),
-    PAT(0xffffffff),
-};
-
-#undef PAT
-
-#define BIG 0
-
 #define GET_PLANE(data, p) (((data) >> ((p) * 8)) & 0xff)
 
 #define xglue(_x, _y) _x##_y

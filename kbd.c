@@ -459,19 +459,16 @@ kbd_range_add(kbd_range_t **rangep, int val)
 
     for (range = *rangep; range != NULL; range = range->next) {
         if (val >= range->start && val <= range->end)
-            break;
+            goto done;
 
         if (val == range->start - 1) {
             range->start--;
-            break;
+            goto done;
         } else if (val == range->end + 1) {
             range->end++;
-            break;
+            goto done;
         }
     }
-
-    if (range != NULL)
-        goto done;
 
 	range = malloc(sizeof(kbd_range_t));
     if (range == NULL)
