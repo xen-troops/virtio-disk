@@ -59,6 +59,9 @@
 #include <locale.h>
 
 #include <xenctrl.h>
+#include <xenforeignmemory.h>
+#include <xenevtchn.h>
+#include <xendevicemodel.h>
 #include <xen/hvm/ioreq.h>
 
 #include <rfb/rfb.h>
@@ -128,13 +131,15 @@ usage(void)
 
 typedef enum {
     DEMU_SEQ_UNINITIALIZED = 0,
-    DEMU_SEQ_INTERFACE_OPEN,
+    DEMU_SEQ_XENCTRL_OPEN,
+    DEMU_SEQ_XENEVTCHN_OPEN,
+    DEMU_SEQ_XENFOREIGNMEMORY_OPEN,
+    DEMU_SEQ_XENDEVICEMODEL_OPEN,
     DEMU_SEQ_SERVER_REGISTERED,
     DEMU_SEQ_SHARED_IOPAGE_MAPPED,
     DEMU_SEQ_BUFFERED_IOPAGE_MAPPED,
     DEMU_SEQ_SERVER_ENABLED,
     DEMU_SEQ_PORT_ARRAY_ALLOCATED,
-    DEMU_SEQ_EVTCHN_OPEN,
     DEMU_SEQ_PORTS_BOUND,
     DEMU_SEQ_BUF_PORT_BOUND,
     DEMU_SEQ_CMD_INITIALIZED,
@@ -176,30 +181,32 @@ struct demu_mouse_cmd {
                            sizeof (struct demu_kbd_cmd)))
 
 typedef struct demu_state {
-    demu_seq_t          seq;
-    timer_t             timer_id;
-    void                (*tick)(void);
-    int                 cmd[2];
-    xc_interface        *xch;
-    xc_evtchn           *xceh;
-    domid_t             domid;
-    unsigned int        vcpus;
-    ioservid_t          ioservid;
-    shared_iopage_t     *shared_iopage;
-    evtchn_port_t       *ioreq_local_port;
-    buffered_iopage_t   *buffered_iopage;
-    evtchn_port_t       buf_ioreq_port;
-    evtchn_port_t       buf_ioreq_local_port;
-    uint32_t            width;
-    uint32_t            height;
-    uint32_t            depth;
-    uint8_t             *default_framebuffer;
-    uint8_t             *framebuffer;
-    rfbScreenInfoPtr    screen;
-    demu_space_t	    *memory;
-    demu_space_t        *port;
-    demu_space_t        *pci_config;
-    pthread_t           thread;
+    demu_seq_t              seq;
+    timer_t                 timer_id;
+    void                    (*tick)(void);
+    int                     cmd[2];
+    xc_interface            *xch;
+    xenevtchn_handle        *xeh;
+    xenforeignmemory_handle *xfh;
+    xendevicemodel_handle   *xdh;
+    domid_t                 domid;
+    unsigned int            vcpus;
+    ioservid_t              ioservid;
+    shared_iopage_t         *shared_iopage;
+    evtchn_port_t           *ioreq_local_port;
+    buffered_iopage_t       *buffered_iopage;
+    evtchn_port_t           buf_ioreq_port;
+    evtchn_port_t           buf_ioreq_local_port;
+    uint32_t                width;
+    uint32_t                height;
+    uint32_t                depth;
+    uint8_t                 *default_framebuffer;
+    uint8_t                 *framebuffer;
+    rfbScreenInfoPtr        screen;
+    demu_space_t	        *memory;
+    demu_space_t            *port;
+    demu_space_t            *pci_config;
+    pthread_t               thread;
 } demu_state_t;
 
 #define DEMU_VNC_DEFAULT_WIDTH  640
@@ -211,7 +218,8 @@ static demu_state_t demu_state;
 void
 demu_set_irq(int irq, int level)
 {
-    xc_hvm_set_isa_irq_level(demu_state.xch, demu_state.domid, irq, level);
+    xendevicemodel_set_isa_irq_level(demu_state.xdh, demu_state.domid,
+                                     irq, level);
 }
 
 void *
@@ -222,15 +230,16 @@ demu_map_guest_pages(xen_pfn_t pfn[], unsigned int n, int populate)
     if (populate) {
         int rc;
 
-        rc = xc_domain_populate_physmap_exact(demu_state.xch, demu_state.domid,
+        rc = xc_domain_populate_physmap_exact(demu_state.xch,
+                                              demu_state.domid,
                                               n, 0, 0, pfn);
         if (rc < 0)
             goto fail1;
     }
 
-    ptr = xc_map_foreign_pages(demu_state.xch, demu_state.domid,
-                               PROT_READ | PROT_WRITE,
-                               pfn, n);
+    ptr = xenforeignmemory_map(demu_state.xfh, demu_state.domid,
+                               PROT_READ | PROT_WRITE, n,
+                               pfn, NULL);
     if (ptr == NULL)
         goto fail2;
 
@@ -243,7 +252,8 @@ fail2:
     DBG("fail2\n");
 
     if (populate)
-        (void) xc_domain_decrease_reservation(demu_state.xch, demu_state.domid,
+        (void) xc_domain_decrease_reservation(demu_state.xch,
+                                              demu_state.domid,
                                               n, 0, pfn);
     
 fail1:
@@ -260,7 +270,8 @@ demu_map_guest_range(uint64_t addr, uint64_t size, int populate)
     int         i, n;
     void        *ptr;
 
-    DBG("%"PRIx64"+%"PRIx64" %s\n", addr, size, (populate) ? "[POPULATE]" : "");
+    DBG("%"PRIx64"+%"PRIx64" %s\n", addr, size,
+        (populate) ? "[POPULATE]" : "");
 
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
 
@@ -293,21 +304,25 @@ fail1:
 }
 
 void
-demu_unmap_guest_pages(void *ptr, xen_pfn_t pfn[], unsigned int n, int depopulate)
+demu_unmap_guest_pages(void *ptr, xen_pfn_t pfn[], unsigned int n,
+                       int depopulate)
 {
     munmap(ptr, TARGET_PAGE_SIZE * n);
     if (depopulate)
-        (void) xc_domain_decrease_reservation(demu_state.xch, demu_state.domid,
+        (void) xc_domain_decrease_reservation(demu_state.xch,
+                                              demu_state.domid,
                                               n, 0, pfn);
 }
 
 int
-demu_unmap_guest_range(void *ptr, uint64_t addr, uint64_t size, int depopulate)
+demu_unmap_guest_range(void *ptr, uint64_t addr, uint64_t size,
+                       int depopulate)
 {
     xen_pfn_t   *pfn;
     int         i, n;
 
-    DBG("%"PRIx64"+%"PRIx64" %s\n", addr, size, (depopulate) ? "[DEPOPULATE]" : "");
+    DBG("%"PRIx64"+%"PRIx64" %s\n", addr, size,
+        (depopulate) ? "[DEPOPULATE]" : "");
 
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
 
@@ -335,8 +350,9 @@ fail1:
 void
 demu_set_guest_dirty_page(xen_pfn_t pfn)
 {
-    (void) xc_hvm_modified_memory(demu_state.xch, demu_state.domid,
-                                  pfn, 1);
+    (void) xendevicemodel_modified_memory(demu_state.xdh,
+                                          demu_state.domid,
+                                          pfn, 1);
 }
 
 void
@@ -344,8 +360,8 @@ demu_track_dirty_vram(xen_pfn_t pfn, int n, unsigned long *bitmap)
 {
     int rc;
 
-    rc = xc_hvm_track_dirty_vram(demu_state.xch, demu_state.domid,
-                                 pfn, n, bitmap);
+    rc = xendevicemodel_track_dirty_vram(demu_state.xdh, demu_state.domid,
+                                         pfn, n, bitmap);
     if (rc < 0 && bitmap != NULL)
         memset(bitmap, 0, n / 8);
 }
@@ -453,8 +469,9 @@ demu_deregister_space(demu_space_t **headp, uint64_t start, uint64_t *end)
 }
 
 int
-demu_register_pci_config_space(uint8_t bus, uint8_t device, uint8_t function,
-                               const io_ops_t *ops, void *priv)
+demu_register_pci_config_space(uint8_t bus, uint8_t device,
+                               uint8_t function, const io_ops_t *ops,
+                               void *priv)
 {
     uint32_t    sbdf;
     int         rc;
@@ -463,12 +480,15 @@ demu_register_pci_config_space(uint8_t bus, uint8_t device, uint8_t function,
 
     sbdf = (bus << 8) | (device << 3) | function;
 
-    rc = demu_register_space(&demu_state.pci_config, sbdf, sbdf, ops, priv);
+    rc = demu_register_space(&demu_state.pci_config, sbdf, sbdf, ops,
+                             priv);
     if (rc < 0)
         goto fail1;
 
-    rc = xc_hvm_map_pcidev_to_ioreq_server(demu_state.xch, demu_state.domid, demu_state.ioservid,
-                                           0, bus, device, function);
+    rc = xendevicemodel_map_pcidev_to_ioreq_server(demu_state.xdh,
+                                                   demu_state.domid,
+                                                   demu_state.ioservid, 0,
+                                                   bus, device, function);
     if (rc < 0)
         goto fail2;
 
@@ -487,7 +507,8 @@ fail1:
 }
 
 int
-demu_register_port_space(uint64_t start, uint64_t size, const io_ops_t *ops, void *priv)
+demu_register_port_space(uint64_t start, uint64_t size,
+                         const io_ops_t *ops, void *priv)
 {
     int rc;
 
@@ -497,8 +518,11 @@ demu_register_port_space(uint64_t start, uint64_t size, const io_ops_t *ops, voi
     if (rc < 0)
         goto fail1;
 
-    rc = xc_hvm_map_io_range_to_ioreq_server(demu_state.xch, demu_state.domid, demu_state.ioservid,
-                                             0, start, start + size - 1);
+    rc = xendevicemodel_map_io_range_to_ioreq_server(demu_state.xdh,
+                                                     demu_state.domid,
+                                                     demu_state.ioservid,
+                                                     0, start,
+                                                     start + size - 1);
     if (rc < 0)
         goto fail2;
 
@@ -517,7 +541,8 @@ fail1:
 }
 
 int
-demu_register_memory_space(uint64_t start, uint64_t size, const io_ops_t *ops, void *priv)
+demu_register_memory_space(uint64_t start, uint64_t size,
+                           const io_ops_t *ops, void *priv)
 {
     int rc;
 
@@ -527,8 +552,11 @@ demu_register_memory_space(uint64_t start, uint64_t size, const io_ops_t *ops, v
     if (rc < 0)
         goto fail1;
 
-    rc = xc_hvm_map_io_range_to_ioreq_server(demu_state.xch, demu_state.domid, demu_state.ioservid,
-                                             1, start, start + size - 1);
+    rc = xendevicemodel_map_io_range_to_ioreq_server(demu_state.xdh,
+                                                     demu_state.domid,
+                                                     demu_state.ioservid,
+                                                     1, start,
+                                                     start + size - 1);
     if (rc < 0)
         goto fail2;
 
@@ -547,7 +575,8 @@ fail1:
 }
 
 void
-demu_deregister_pci_config_space(uint8_t bus, uint8_t device, uint8_t function)
+demu_deregister_pci_config_space(uint8_t bus, uint8_t device,
+                                 uint8_t function)
 {
     uint32_t    sbdf;
 
@@ -557,8 +586,10 @@ demu_deregister_pci_config_space(uint8_t bus, uint8_t device, uint8_t function)
 
     demu_deregister_space(&demu_state.pci_config, sbdf, NULL);
 
-    xc_hvm_unmap_pcidev_from_ioreq_server(demu_state.xch, demu_state.domid, demu_state.ioservid,
-                                          0, bus, device, function);
+    xendevicemodel_unmap_pcidev_from_ioreq_server(demu_state.xdh,
+                                                  demu_state.domid,
+                                                  demu_state.ioservid, 0,
+                                                  bus, device, function);
 }
 
 void
@@ -570,8 +601,10 @@ demu_deregister_port_space(uint64_t start)
 
     demu_deregister_space(&demu_state.port, start, &end);
 
-    xc_hvm_unmap_io_range_from_ioreq_server(demu_state.xch, demu_state.domid, demu_state.ioservid,
-                                            0, start, end);
+    xendevicemodel_unmap_io_range_from_ioreq_server(demu_state.xdh,
+                                                    demu_state.domid,
+                                                    demu_state.ioservid,
+                                                    0, start, end);
 }
 
 void
@@ -583,8 +616,10 @@ demu_deregister_memory_space(uint64_t start)
 
     demu_deregister_space(&demu_state.memory, start, &end);
 
-    xc_hvm_unmap_io_range_from_ioreq_server(demu_state.xch, demu_state.domid, demu_state.ioservid,
-                                            1, start, end);
+    xendevicemodel_unmap_io_range_from_ioreq_server(demu_state.xdh,
+                                                    demu_state.domid,
+                                                    demu_state.ioservid,
+                                                    1, start, end);
 }
 
 #define DEMU_IO_READ(_fn, _priv, _addr, _size, _count, _val)        \
@@ -621,9 +656,11 @@ demu_io_read(demu_space_t *space, uint64_t addr, uint64_t size)
     case 4:
         if (space->ops->readl == NULL) {
             if (space->ops->readw == NULL)
-                DEMU_IO_READ(space->ops->readb, space->priv, addr, 1, 4, val);
+                DEMU_IO_READ(space->ops->readb, space->priv, addr, 1, 4,
+                             val);
             else
-                DEMU_IO_READ(space->ops->readw, space->priv, addr, 2, 2, val);
+                DEMU_IO_READ(space->ops->readw, space->priv, addr, 2, 2,
+                             val);
         } else {
             DEMU_IO_READ(space->ops->readl, space->priv, addr, 4, 1, val);
         }
@@ -632,9 +669,11 @@ demu_io_read(demu_space_t *space, uint64_t addr, uint64_t size)
     case 8:
         if (space->ops->readl == NULL) {
             if (space->ops->readw == NULL)
-                DEMU_IO_READ(space->ops->readb, space->priv, addr, 1, 8, val);
+                DEMU_IO_READ(space->ops->readb, space->priv, addr, 1, 8,
+                             val);
             else
-                DEMU_IO_READ(space->ops->readw, space->priv, addr, 2, 4, val);
+                DEMU_IO_READ(space->ops->readw, space->priv, addr, 2, 4,
+                             val);
         } else {
             DEMU_IO_READ(space->ops->readl, space->priv, addr, 4, 2, val);
         }
@@ -661,7 +700,8 @@ demu_io_read(demu_space_t *space, uint64_t addr, uint64_t size)
     } while (FALSE)
 
 void
-demu_io_write(demu_space_t *space, uint64_t addr, uint64_t size, uint64_t val)
+demu_io_write(demu_space_t *space, uint64_t addr, uint64_t size,
+              uint64_t val)
 {
     switch (size) {
     case 1:
@@ -670,30 +710,38 @@ demu_io_write(demu_space_t *space, uint64_t addr, uint64_t size, uint64_t val)
 
     case 2:
         if (space->ops->writew == NULL)
-            DEMU_IO_WRITE(space->ops->writeb, space->priv, addr, 1, 2, val);
+            DEMU_IO_WRITE(space->ops->writeb, space->priv, addr, 1, 2,
+                          val);
         else
-            DEMU_IO_WRITE(space->ops->writew, space->priv, addr, 2, 1, val);
+            DEMU_IO_WRITE(space->ops->writew, space->priv, addr, 2, 1,
+                          val);
         break;
 
     case 4:
         if (space->ops->writel == NULL) {
             if (space->ops->writew == NULL)
-                DEMU_IO_WRITE(space->ops->writeb, space->priv, addr, 1, 4, val);
+                DEMU_IO_WRITE(space->ops->writeb, space->priv, addr, 1, 4,
+                              val);
             else
-                DEMU_IO_WRITE(space->ops->writew, space->priv, addr, 2, 2, val);
+                DEMU_IO_WRITE(space->ops->writew, space->priv, addr, 2, 2,
+                              val);
         } else {
-            DEMU_IO_WRITE(space->ops->writel, space->priv, addr, 4, 1, val);
+            DEMU_IO_WRITE(space->ops->writel, space->priv, addr, 4, 1,
+                          val);
         }
         break;
 
     case 8:
         if (space->ops->writel == NULL) {
             if (space->ops->writew == NULL)
-                DEMU_IO_WRITE(space->ops->writeb, space->priv, addr, 1, 8, val);
+                DEMU_IO_WRITE(space->ops->writeb, space->priv, addr, 1, 8,
+                              val);
             else
-                DEMU_IO_WRITE(space->ops->writew, space->priv, addr, 2, 4, val);
+                DEMU_IO_WRITE(space->ops->writew, space->priv, addr, 2, 4,
+                              val);
         } else {
-            DEMU_IO_WRITE(space->ops->writel, space->priv, addr, 4, 2, val);
+            DEMU_IO_WRITE(space->ops->writel, space->priv, addr, 4, 2,
+                          val);
         }
         break;
 
@@ -788,7 +836,8 @@ demu_handle_io(demu_space_t *space, ioreq_t *ioreq, int is_mmio)
                 
                 data = demu_io_read(space, ioreq->addr, ioreq->size);
 
-                __copy_to_guest_memory(ioreq->data + (sign * i * ioreq->size),
+                __copy_to_guest_memory(ioreq->data +
+                                       (sign * i * ioreq->size),
                                        ioreq->size, (uint8_t *)&data);
 
                 if (is_mmio)
@@ -805,7 +854,8 @@ demu_handle_io(demu_space_t *space, ioreq_t *ioreq, int is_mmio)
             for (i = 0; i < ioreq->count; i++) {
                 uint64_t    data;
 
-                __copy_from_guest_memory(ioreq->data + (sign * i * ioreq->size),
+                __copy_from_guest_memory(ioreq->data +
+                                         (sign * i * ioreq->size),
                                          ioreq->size, (uint8_t *)&data);
 
                 demu_io_write(space, ioreq->addr, ioreq->size, data);
@@ -862,7 +912,8 @@ demu_handle_ioreq(ioreq_t *ioreq)
     }
 }
 
-static void demu_vnc_mouse(int buttonMask, int x, int y, rfbClientPtr client)
+static void demu_vnc_mouse(int buttonMask, int x, int y,
+                           rfbClientPtr client)
 {
     struct demu_mouse_cmd   cmd;
 
@@ -876,7 +927,8 @@ static void demu_vnc_mouse(int buttonMask, int x, int y, rfbClientPtr client)
     rfbDefaultPtrAddEvent(buttonMask, x, y, client);
 }
 
-static void demu_vnc_key(rfbBool down, rfbKeySym sym, rfbClientPtr client)
+static void demu_vnc_key(rfbBool down, rfbKeySym sym,
+                         rfbClientPtr client)
 {
     struct demu_kbd_cmd     cmd;
 
@@ -949,12 +1001,15 @@ demu_get_framebuffer(void)
 }   
 
 void
-demu_update_framebuffer(uint32_t x, uint32_t y, uint32_t width, uint32_t height)
+demu_update_framebuffer(uint32_t x, uint32_t y, uint32_t width,
+                        uint32_t height)
 {
     rfbScreenInfoPtr    screen = demu_state.screen; 
 
-    rfbMarkRectAsModified(screen, x * 160, y, (x + width) * 160, y + height);
-    //rfbMarkRectAsModified(screen, 0, 0, demu_state.width * 160, demu_state.height);
+    rfbMarkRectAsModified(screen, x * 160, y,
+                          (x + width) * 160, y + height);
+    //rfbMarkRectAsModified(screen, 0, 0,
+    //                      demu_state.width * 160, demu_state.height);
 }   
 
 static int
@@ -972,8 +1027,9 @@ demu_vnc_initialize(void)
 
     for (y = 0; y < DEMU_VNC_DEFAULT_HEIGHT; y++) {
         for (x = 0; x < DEMU_VNC_DEFAULT_WIDTH; x++) {
-            uint8_t *pixel = &framebuffer[(y * DEMU_VNC_DEFAULT_WIDTH + x) *
-                                          DEMU_VNC_DEFAULT_DEPTH];
+            uint8_t *pixel =
+                &framebuffer[(y * DEMU_VNC_DEFAULT_WIDTH + x) *
+                             DEMU_VNC_DEFAULT_DEPTH];
             pixel[0] = (y * 256) / DEMU_VNC_DEFAULT_HEIGHT; /* RED */
             pixel[1] = (y * 256) / DEMU_VNC_DEFAULT_HEIGHT; /* GREEN */
             pixel[2] = (y * 256) / DEMU_VNC_DEFAULT_HEIGHT; /* BLUE */
@@ -1033,8 +1089,20 @@ demu_seq_next(void)
     assert(demu_state.seq < DEMU_SEQ_INITIALIZED);
 
     switch (++demu_state.seq) {
-    case DEMU_SEQ_INTERFACE_OPEN:
-        DBG(">INTERFACE_OPEN\n");
+    case DEMU_SEQ_XENCTRL_OPEN:
+        DBG(">XENCTRL_OPEN\n");
+        break;
+
+    case DEMU_SEQ_XENEVTCHN_OPEN:
+        DBG(">XENEVTCHN_OPEN\n");
+        break;
+
+    case DEMU_SEQ_XENFOREIGNMEMORY_OPEN:
+        DBG(">XENFOREIGNMEMORY_OPEN\n");
+        break;
+
+    case DEMU_SEQ_XENDEVICEMODEL_OPEN:
+        DBG(">XENDEVICEMODEL_OPEN\n");
         break;
 
     case DEMU_SEQ_SERVER_REGISTERED:
@@ -1054,10 +1122,6 @@ demu_seq_next(void)
 
     case DEMU_SEQ_PORT_ARRAY_ALLOCATED:
         DBG(">PORT_ARRAY_ALLOCATED\n");
-        break;
-
-    case DEMU_SEQ_EVTCHN_OPEN:
-        DBG(">EVTCHN_OPEN\n");
         break;
 
     case DEMU_SEQ_PORTS_BOUND: {
@@ -1192,17 +1256,17 @@ demu_teardown(void)
         close(demu_state.cmd[1]);
         close(demu_state.cmd[0]);
 
-        demu_state.seq = DEMU_SEQ_PORTS_BOUND;
+        demu_state.seq = DEMU_SEQ_BUF_PORT_BOUND;
     }
 
-    if (demu_state.seq >= DEMU_SEQ_PORTS_BOUND) {
+    if (demu_state.seq >= DEMU_SEQ_BUF_PORT_BOUND) {
         DBG("<EVTCHN_BUF_PORT_BOUND\n");
         evtchn_port_t   port;
 
         port = demu_state.buf_ioreq_local_port;
 
         DBG("%u\n", port);
-        (void) xc_evtchn_unbind(demu_state.xceh, port);
+        (void) xenevtchn_unbind(demu_state.xeh, port);
 
         demu_state.seq = DEMU_SEQ_PORTS_BOUND;
     }
@@ -1210,13 +1274,13 @@ demu_teardown(void)
     if (demu_state.seq >= DEMU_SEQ_PORTS_BOUND) {
         DBG("<EVTCHN_PORTS_BOUND\n");
 
-        demu_state.seq = DEMU_SEQ_EVTCHN_OPEN;
+        demu_state.seq = DEMU_SEQ_PORT_ARRAY_ALLOCATED;
     }
 
-    if (demu_state.seq >= DEMU_SEQ_EVTCHN_OPEN) {
+    if (demu_state.seq >= DEMU_SEQ_PORT_ARRAY_ALLOCATED) {
         int i;
 
-        DBG("<EVTCHN_OPEN\n");
+        DBG("<PORT_ARRAY_ALLOCATED\n");
 
         for (i = 0; i < demu_state.vcpus; i++) {
             evtchn_port_t   port;
@@ -1225,17 +1289,9 @@ demu_teardown(void)
 
             if (port >= 0) {
                 DBG("VCPU%d: %u\n", i, port);
-                (void) xc_evtchn_unbind(demu_state.xceh, port);
+                (void) xenevtchn_unbind(demu_state.xeh, port);
             }
         }
-
-        xc_evtchn_close(demu_state.xceh);
-
-        demu_state.seq = DEMU_SEQ_PORT_ARRAY_ALLOCATED;
-    }
-
-    if (demu_state.seq >= DEMU_SEQ_PORT_ARRAY_ALLOCATED) {
-        DBG("<PORT_ARRAY_ALLOCATED\n");
 
         free(demu_state.ioreq_local_port);
 
@@ -1244,10 +1300,10 @@ demu_teardown(void)
 
     if (demu_state.seq == DEMU_SEQ_SERVER_ENABLED) {
         DBG("<SERVER_ENABLED\n");
-        (void) xc_hvm_set_ioreq_server_state(demu_state.xch,
-                                             demu_state.domid,
-                                             demu_state.ioservid,
-                                             0);
+        (void) xendevicemodel_set_ioreq_server_state(demu_state.xdh,
+                                                     demu_state.domid,
+                                                     demu_state.ioservid,
+                                                     0);
 
         demu_state.seq = DEMU_SEQ_BUFFERED_IOPAGE_MAPPED;
     }
@@ -1271,14 +1327,38 @@ demu_teardown(void)
     if (demu_state.seq >= DEMU_SEQ_SERVER_REGISTERED) {
         DBG("<SERVER_REGISTERED\n");
 
-        (void) xc_hvm_destroy_ioreq_server(demu_state.xch,
-                                           demu_state.domid,
-                                           demu_state.ioservid);
-        demu_state.seq = DEMU_SEQ_INTERFACE_OPEN;
+        (void) xendevicemodel_destroy_ioreq_server(demu_state.xdh,
+                                                   demu_state.domid,
+                                                   demu_state.ioservid);
+        demu_state.seq = DEMU_SEQ_XENDEVICEMODEL_OPEN;
     }
 
-    if (demu_state.seq >= DEMU_SEQ_INTERFACE_OPEN) {
-        DBG("<INTERFACE_OPEN\n");
+    if (demu_state.seq >= DEMU_SEQ_XENDEVICEMODEL_OPEN) {
+        DBG("<XENDEVICEMODEL_OPEN\n");
+
+        xendevicemodel_close(demu_state.xdh);
+
+        demu_state.seq = DEMU_SEQ_XENFOREIGNMEMORY_OPEN;
+    }
+
+    if (demu_state.seq >= DEMU_SEQ_XENFOREIGNMEMORY_OPEN) {
+        DBG("<XENFOREIGNMEMORY_OPEN\n");
+
+        xenforeignmemory_close(demu_state.xfh);
+
+        demu_state.seq = DEMU_SEQ_XENEVTCHN_OPEN;
+    }
+
+    if (demu_state.seq >= DEMU_SEQ_XENEVTCHN_OPEN) {
+        DBG("<XENEVTCHN_OPEN\n");
+
+        xenevtchn_close(demu_state.xeh);
+
+        demu_state.seq = DEMU_SEQ_XENCTRL_OPEN;
+    }
+
+    if (demu_state.seq >= DEMU_SEQ_XENCTRL_OPEN) {
+        DBG("<XENCTRL_OPEN\n");
 
         xc_interface_close(demu_state.xch);
 
@@ -1359,113 +1439,127 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     demu_seq_next();
 
+    demu_state.xeh = xenevtchn_open(NULL, 0);
+    if (demu_state.xeh == NULL)
+        goto fail2;
+
+    demu_seq_next();
+
+    demu_state.xfh = xenforeignmemory_open(NULL, 0);
+    if (demu_state.xfh == NULL)
+        goto fail3;
+
+    demu_seq_next();
+
+    demu_state.xdh = xendevicemodel_open(NULL, 0);
+    if (demu_state.xdh == NULL)
+        goto fail4;
+
+    demu_seq_next();
+
     rc = xc_domain_getinfo(demu_state.xch, demu_state.domid, 1, &dominfo);
     if (rc < 0 || dominfo.domid != demu_state.domid)
-        goto fail2;
+        goto fail5;
 
     demu_state.vcpus = dominfo.max_vcpu_id + 1;
 
     DBG("%d vCPU(s)\n", demu_state.vcpus);
 
-    rc = xc_hvm_create_ioreq_server(demu_state.xch, demu_state.domid, 1,
-                                    &demu_state.ioservid);
+    rc = xendevicemodel_create_ioreq_server(demu_state.xdh,
+                                            demu_state.domid, 1,
+                                            &demu_state.ioservid);
     if (rc < 0)
-        goto fail3;
+        goto fail6;
     
     demu_seq_next();
 
-    rc = xc_hvm_get_ioreq_server_info(demu_state.xch, demu_state.domid,
-                                      demu_state.ioservid, &pfn, &buf_pfn, &buf_port);
+    rc = xendevicemodel_get_ioreq_server_info(demu_state.xdh,
+                                              demu_state.domid,
+                                              demu_state.ioservid,
+                                              &pfn, &buf_pfn, &buf_port);
     if (rc < 0)
-        goto fail4;
-
-    demu_state.shared_iopage = xc_map_foreign_range(demu_state.xch,
-                                                    demu_state.domid,
-                                                    XC_PAGE_SIZE,
-                                                    PROT_READ | PROT_WRITE,
-                                                    pfn);
-    if (demu_state.shared_iopage == NULL)
-        goto fail5;
-
-    demu_seq_next();
-
-    demu_state.buffered_iopage = xc_map_foreign_range(demu_state.xch,
-                                                      demu_state.domid,
-                                                      XC_PAGE_SIZE,
-                                                      PROT_READ | PROT_WRITE,
-                                                      buf_pfn);
-    if (demu_state.buffered_iopage == NULL)
-        goto fail6;
-
-    demu_seq_next();
-
-    rc = xc_hvm_set_ioreq_server_state(demu_state.xch,
-                                       demu_state.domid,
-                                       demu_state.ioservid,
-                                       1);
-    if (rc != 0)
         goto fail7;
+
+    demu_state.shared_iopage = xenforeignmemory_map(demu_state.xfh,
+                                                    demu_state.domid,
+                                                    PROT_READ | PROT_WRITE,
+                                                    1, &pfn, NULL);
+    if (demu_state.shared_iopage == NULL)
+        goto fail8;
+
+    demu_seq_next();
+
+    demu_state.buffered_iopage = xenforeignmemory_map(demu_state.xfh,
+                                                      demu_state.domid,
+                                                      PROT_READ |
+                                                      PROT_WRITE, 1,
+                                                      &buf_pfn, NULL);
+    if (demu_state.buffered_iopage == NULL)
+        goto fail9;
+
+    demu_seq_next();
+
+    rc = xendevicemodel_set_ioreq_server_state(demu_state.xdh,
+                                               demu_state.domid,
+                                               demu_state.ioservid,
+                                               1);
+    if (rc != 0)
+        goto fail10;
 
     demu_seq_next();
 
     demu_state.ioreq_local_port = malloc(sizeof (evtchn_port_t) *
                                          demu_state.vcpus);
     if (demu_state.ioreq_local_port == NULL)
-        goto fail8;
+        goto fail11;
 
     for (i = 0; i < demu_state.vcpus; i++)
         demu_state.ioreq_local_port[i] = -1;
 
     demu_seq_next();
 
-    demu_state.xceh = xc_evtchn_open(NULL, 0);
-    if (demu_state.xceh == NULL)
-        goto fail9;
-
-    demu_seq_next();
-
     for (i = 0; i < demu_state.vcpus; i++) {
         port = demu_state.shared_iopage->vcpu_ioreq[i].vp_eport;
 
-        rc = xc_evtchn_bind_interdomain(demu_state.xceh, demu_state.domid,
+        rc = xenevtchn_bind_interdomain(demu_state.xeh, demu_state.domid,
                                         port);
         if (rc < 0)
-            goto fail10;
+            goto fail12;
 
         demu_state.ioreq_local_port[i] = rc;
     }
 
     demu_seq_next();
 
-    rc = xc_evtchn_bind_interdomain(demu_state.xceh, demu_state.domid,
+    rc = xenevtchn_bind_interdomain(demu_state.xeh, demu_state.domid,
                                     buf_port);
     if (rc < 0)
-        goto fail11;
+        goto fail13;
 
     demu_state.buf_ioreq_local_port = rc;
 
     demu_seq_next();
 
     if (pipe(demu_state.cmd) < 0)
-        goto fail12;
+        goto fail14;
 
     demu_seq_next();
 
     rc = kbd_initialize((keymap) ? keymap : DEMU_KEYMAP);
     if (rc < 0)
-        goto fail13;
+        goto fail15;
 
     demu_seq_next();
 
     rc = mouse_initialize();
     if (rc < 0)
-        goto fail14;
+        goto fail16;
 
     demu_seq_next();
 
     rc = demu_vnc_initialize();
     if (rc < 0)
-        goto fail15;
+        goto fail17;
 
     demu_seq_next();
 
@@ -1473,25 +1567,25 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
                         DEMU_VRAM_SIZE,
                         (rom_file) ? rom_file : DEMU_ROM_FILE);
     if (rc < 0)
-        goto fail16;
+        goto fail18;
 
     demu_seq_next();
 
     rc = ps2_initialize();
     if (rc < 0)
-        goto fail17;
+        goto fail19;
 
     demu_seq_next();
 
     rc = surface_initialize();
     if (rc < 0)
-        goto fail18;
+        goto fail20;
 
     demu_seq_next();
 
     rc = pthread_create(&demu_state.thread, NULL, demu_thread, NULL);
     if (rc != 0)
-        goto fail19;
+        goto fail21;
 
     demu_seq_next();
 
@@ -1499,6 +1593,12 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     assert(demu_state.seq == DEMU_SEQ_INITIALIZED);
     return 0;
+
+fail21:
+    DBG("fail21\n");
+
+fail20:
+    DBG("fail20\n");
 
 fail19:
     DBG("fail19\n");
@@ -1636,7 +1736,7 @@ demu_poll_shared_iopage(unsigned int i)
     ioreq->state = STATE_IORESP_READY;
     mb();
 
-    xc_evtchn_notify(demu_state.xceh, demu_state.ioreq_local_port[i]);
+    xenevtchn_notify(demu_state.xeh, demu_state.ioreq_local_port[i]);
 }
 
 static void
@@ -1648,17 +1748,17 @@ demu_poll_iopages(void)
     if (demu_state.seq != DEMU_SEQ_INITIALIZED)
         return;
 
-    port = xc_evtchn_pending(demu_state.xceh);
+    port = xenevtchn_pending(demu_state.xeh);
     if (port < 0)
         return;
 
     if (port == demu_state.buf_ioreq_local_port) {
-        xc_evtchn_unmask(demu_state.xceh, port);
+        xenevtchn_unmask(demu_state.xeh, port);
         demu_poll_buffered_iopage();
     } else {
         for (i = 0; i < demu_state.vcpus; i++) {
             if (port == demu_state.ioreq_local_port[i]) {
-                xc_evtchn_unmask(demu_state.xceh, port);
+                xenevtchn_unmask(demu_state.xeh, port);
                 demu_poll_shared_iopage(i);
             }
         }
@@ -1884,7 +1984,7 @@ main(int argc, char **argv, char **envp)
         exit(1);
     }
 
-    efd = xc_evtchn_fd(demu_state.xceh);
+    efd = xenevtchn_fd(demu_state.xeh);
 
     cfd = demu_state.cmd[0];
         
