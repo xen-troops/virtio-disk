@@ -27,23 +27,25 @@
  *
  */
 
-#ifndef  _SURFACE_H
-#define  _SURFACE_H
+#ifndef  _DEVICE_H
+#define  _DEVICE_H
 
-int     surface_initialize(void);
-void    surface_refresh(void);
-void    surface_teardown(void);
+#include <xenctrl.h>
+#include <xendevicemodel.h>
 
-#endif  /* _SURFACE_H */
+int device_initialize(void);
+void device_teardown(void);
+
+#endif  /* _DEVICE_H */
 
 /*
  * Local variables:
  * mode: C
- * c-tab-always-indent: nil
  * c-file-style: "BSD"
  * c-basic-offset: 4
- * c-basic-indent: 4
+ * c-tab-always-indent: nil
  * tab-width: 4
  * indent-tabs-mode: nil
  * End:
  */
+

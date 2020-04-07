@@ -68,9 +68,6 @@ static inline void demu_unmap_guest_page(void *ptr, xen_pfn_t pfn,
 int     demu_unmap_guest_range(void *ptr, uint64_t addr, uint64_t size,
                                int depopulate);
 
-void    demu_set_guest_dirty_page(xen_pfn_t pfn);
-void    demu_track_dirty_vram(xen_pfn_t pfn, int n, unsigned long *bitmap);
-
 typedef struct io_ops {
         uint8_t         (*readb)(void *priv, uint64_t addr);
         uint16_t        (*readw)(void *priv, uint64_t addr);
@@ -80,23 +77,11 @@ typedef struct io_ops {
         void            (*writel)(void *priv, uint64_t addr, uint32_t val);
 } io_ops_t;
 
-int demu_register_pci_config_space(uint8_t bus, uint8_t device, uint8_t function,
-                                   const io_ops_t *ops, void *priv);
-int demu_register_port_space(uint64_t start, uint64_t size,
-                             const io_ops_t *ops, void *priv);
+
 int demu_register_memory_space(uint64_t start, uint64_t size,
                                const io_ops_t *ops, void *priv);
 
-void demu_deregister_pci_config_space(uint8_t bus, uint8_t device, uint8_t function);
-void demu_deregister_port_space(uint64_t start);
 void demu_deregister_memory_space(uint64_t start);
-
-void    demu_new_framebuffer(uint32_t width, uint32_t height, uint32_t depth);
-uint8_t *demu_get_framebuffer(void);
-void    demu_update_framebuffer(uint32_t x, uint32_t y, uint32_t width, uint32_t height);
-
-int     demu_timer_start(unsigned int period, void (*tick)(void));
-int     demu_timer_stop(void);
 
 #endif  /* _DEMU_H */
 
