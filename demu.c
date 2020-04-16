@@ -63,14 +63,25 @@
 #include <xen/hvm/ioreq.h>
 
 #include "debug.h"
-#include "mapcache.h"
 #include "device.h"
 #include "demu.h"
 
-#define mb() asm volatile ("" : : : "memory")
+#include "kvm/kvm.h"
 
-#define __min(_x, _y) (((_x) <= (_y)) ? (_x) : (_y))
-#define __max(_x, _y) (((_x) > (_y)) ? (_x) : (_y))
+/*
+ * XXX:
+ * 1. This file should be refactored heavily.
+ * 2. There must be ability to reconnect to the newly created domain.
+ * 3. There must be ability to release domain resources if one goes away.
+ * 4. Backend should be able to maintain several instances.
+ * 5. Sync with recent kvmtool changes.
+ */
+
+static unsigned long count;
+
+bool do_debug_print = true;
+
+#define mb() asm volatile ("" : : : "memory")
 
 enum {
     DEMU_OPT_DOMAIN,
@@ -122,7 +133,6 @@ typedef enum {
     DEMU_SEQ_PORTS_BOUND,
     DEMU_SEQ_BUF_PORT_BOUND,
     DEMU_SEQ_DEVICE_INITIALIZED,
-    DEMU_SEQ_THREAD_INITIALIZED,
     DEMU_SEQ_INITIALIZED,
     DEMU_NR_SEQS
 } demu_seq_t;
@@ -153,7 +163,6 @@ typedef struct demu_state {
     evtchn_port_t                    buf_ioreq_port;
     evtchn_port_t                    buf_ioreq_local_port;
     demu_space_t                     *memory;
-    pthread_t                        thread;
 } demu_state_t;
 
 static demu_state_t demu_state;
@@ -165,74 +174,42 @@ demu_set_irq(int irq, int level)
                                  irq, level);
 }
 
-void *
-demu_map_guest_pages(xen_pfn_t pfn[], unsigned int n, int populate)
+static inline void *
+demu_map_guest_pages(xen_pfn_t pfn[], unsigned int n)
 {
-    void *ptr;
-
-    if (populate) {
-        int rc;
-
-        rc = xc_domain_populate_physmap_exact(demu_state.xch,
-                                              demu_state.domid,
-                                              n, 0, 0, pfn);
-        if (rc < 0)
-            goto fail1;
-    }
-
-    ptr = xenforeignmemory_map(demu_state.xfh, demu_state.domid,
-                               PROT_READ | PROT_WRITE, n,
-                               pfn, NULL);
-    if (ptr == NULL)
-        goto fail2;
-
-    if (populate)
-        memset(ptr, 0, n * TARGET_PAGE_SIZE);
-    
-    return ptr;
-
-fail2:
-    DBG("fail2\n");
-
-    if (populate)
-        (void) xc_domain_decrease_reservation(demu_state.xch,
-                                              demu_state.domid,
-                                              n, 0, pfn);
-    
-fail1:
-    DBG("fail1\n");
-
-    warn("fail");
-    return NULL;
+    return xenforeignmemory_map(demu_state.xfh, demu_state.domid,
+                                PROT_READ | PROT_WRITE, n,
+                                pfn, NULL);
 }
 
 void *
-demu_map_guest_range(uint64_t addr, uint64_t size, int populate)
+demu_map_guest_range(uint64_t addr, uint64_t size)
 {
     xen_pfn_t   *pfn;
     int         i, n;
     void        *ptr;
 
-    DBG("%"PRIx64"+%"PRIx64" %s\n", addr, size,
-        (populate) ? "[POPULATE]" : "");
+    count ++;
+
+    /*DBG("%"PRIx64"+%"PRIx64" (%lu)\n", addr, size, count);*/
 
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
-
     n = size >> TARGET_PAGE_SHIFT;
-    pfn = malloc(sizeof (xen_pfn_t) * n);
 
+    pfn = malloc(sizeof (xen_pfn_t) * n);
     if (pfn == NULL)
         goto fail1;
 
     for (i = 0; i < n; i++)
         pfn[i] = (addr >> TARGET_PAGE_SHIFT) + i;
     
-    ptr = demu_map_guest_pages(pfn, n, populate);
+    ptr = demu_map_guest_pages(pfn, n);
     if (ptr == NULL)
         goto fail2;
     
     free(pfn);
-    return ptr;
+
+    return ptr + (addr % TARGET_PAGE_SIZE);
     
 fail2:
     DBG("fail2\n");
@@ -246,48 +223,27 @@ fail1:
     return NULL;
 }
 
-void
-demu_unmap_guest_pages(void *ptr, xen_pfn_t pfn[], unsigned int n,
-                       int depopulate)
+static inline void
+demu_unmap_guest_pages(void *ptr, unsigned int n)
 {
-    munmap(ptr, TARGET_PAGE_SIZE * n);
-    if (depopulate)
-        (void) xc_domain_decrease_reservation(demu_state.xch,
-                                              demu_state.domid,
-                                              n, 0, pfn);
+    xenforeignmemory_unmap(demu_state.xfh, ptr, n);
 }
 
 int
-demu_unmap_guest_range(void *ptr, uint64_t addr, uint64_t size,
-                       int depopulate)
+demu_unmap_guest_range(void *ptr, uint64_t size)
 {
-    xen_pfn_t   *pfn;
-    int         i, n;
+    int n;
 
-    DBG("%"PRIx64"+%"PRIx64" %s\n", addr, size,
-        (depopulate) ? "[DEPOPULATE]" : "");
+    count --;
+
+    /*DBG("%p+%"PRIx64" (%lu)\n", ptr, size, count);*/
 
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
-
     n = size >> TARGET_PAGE_SHIFT;
-    pfn = malloc(sizeof (xen_pfn_t) * n);
 
-    if (pfn == NULL)
-        goto fail1;
+    demu_unmap_guest_pages((void *)((unsigned long)ptr & TARGET_PAGE_MASK), n);
 
-    for (i = 0; i < n; i++)
-        pfn[i] = (addr >> TARGET_PAGE_SHIFT) + i;
-    
-    demu_unmap_guest_pages(ptr, pfn, n, depopulate);
-    
-    free(pfn);
     return 0;
-    
-fail1:
-    DBG("fail1\n");
-
-    warn("fail");
-    return -1;
 }
 
 static demu_space_t *
@@ -543,119 +499,31 @@ demu_io_write(demu_space_t *space, uint64_t addr, uint64_t size,
     }
 }
 
-static inline void
-__copy_to_guest_memory(uint64_t addr, uint64_t size, uint8_t *src)
-{
-    xen_pfn_t       pfn = addr >> TARGET_PAGE_SHIFT;
-    uint64_t        offset = addr & (TARGET_PAGE_SIZE - 1);
-
-    while (size != 0) {
-        uint8_t     *dst;
-        uint64_t    chunk;
-
-        chunk = __min(size, TARGET_PAGE_SIZE - offset);
-
-        dst = mapcache_lookup(pfn);
-        if (dst == NULL)
-            goto fail1;
-
-        dst += offset;
-
-        memcpy(dst, src, chunk);
-
-        src += chunk;
-        size -= chunk;
-
-        pfn++;
-        offset = 0;
-    }
-
-    return;
-
-fail1:
-    DBG("fail1\n");
-}
-
-static inline void
-__copy_from_guest_memory(uint64_t addr, uint64_t size, uint8_t *dst)
-{
-    xen_pfn_t       pfn = addr >> TARGET_PAGE_SHIFT;
-    uint64_t        offset = addr & (TARGET_PAGE_SIZE - 1);
-
-    while (size != 0) {
-        uint8_t     *src;
-        uint64_t    chunk;
-
-        chunk = __min(size, TARGET_PAGE_SIZE - offset);
-
-        src = mapcache_lookup(pfn);
-        if (src == NULL)
-            goto fail1;
-
-        src += offset;
-
-        memcpy(dst, src, chunk);
-
-        dst += chunk;
-        size -= chunk;
-
-        pfn++;
-        offset = 0;
-    }
-
-    return;
-
-fail1:
-    DBG("fail1\n");
-
-    memset(dst, 0xff, size);
-}
-
 static void
 demu_handle_io(demu_space_t *space, ioreq_t *ioreq, int is_mmio)
 {
+    uint8_t data[8] = {0};
+
     if (space == NULL)
         goto fail1;
 
     if (ioreq->dir == IOREQ_READ) {
         if (!ioreq->data_is_ptr) {
-            ioreq->data = demu_io_read(space, ioreq->addr, ioreq->size);
+            /*ioreq->data = demu_io_read(space, ioreq->addr, ioreq->size);*/
+
+            kvm__emulate_mmio(NULL, ioreq->addr, data, ioreq->size, 0);
+            ioreq->data = *(uint64_t *)&data;
         } else {
-            int i, sign;
-
-            sign = ioreq->df ? -1 : 1;
-            for (i = 0; i < ioreq->count; i++) {
-                uint64_t    data;
-                
-                data = demu_io_read(space, ioreq->addr, ioreq->size);
-
-                __copy_to_guest_memory(ioreq->data +
-                                       (sign * i * ioreq->size),
-                                       ioreq->size, (uint8_t *)&data);
-
-                if (is_mmio)
-                    ioreq->addr += sign * ioreq->size;
-            }
+            assert(FALSE);
         }
     } else if (ioreq->dir == IOREQ_WRITE) {
         if (!ioreq->data_is_ptr) {
-            demu_io_write(space, ioreq->addr, ioreq->size, ioreq->data);
+            /*demu_io_write(space, ioreq->addr, ioreq->size, ioreq->data);*/
+
+            *(uint64_t *)&data = ioreq->data;
+            kvm__emulate_mmio(NULL, ioreq->addr, data, ioreq->size, 1);
         } else {
-            int i, sign;
-
-            sign = ioreq->df ? -1 : 1;
-            for (i = 0; i < ioreq->count; i++) {
-                uint64_t    data;
-
-                __copy_from_guest_memory(ioreq->data +
-                                         (sign * i * ioreq->size),
-                                         ioreq->size, (uint8_t *)&data);
-
-                demu_io_write(space, ioreq->addr, ioreq->size, data);
-
-                if (is_mmio)
-                    ioreq->addr += sign * ioreq->size;
-            }
+            assert(FALSE);
         }
     }
 
@@ -678,7 +546,7 @@ demu_handle_ioreq(ioreq_t *ioreq)
 
     /* XXX: Do we need this? */
     case IOREQ_TYPE_INVALIDATE:
-        mapcache_invalidate();
+        assert(FALSE);
         break;
 
     default:
@@ -753,10 +621,6 @@ demu_seq_next(void)
         DBG(">DEVICE_INITIALIZED\n");
         break;
 
-    case DEMU_SEQ_THREAD_INITIALIZED:
-        DBG(">THREAD_INITIALIZED\n");
-        break;
-
     case DEMU_SEQ_INITIALIZED:
         DBG(">INITIALIZED\n");
         break;
@@ -772,14 +636,6 @@ demu_teardown(void)
 {
     if (demu_state.seq == DEMU_SEQ_INITIALIZED) {
         DBG("<INITIALIZED\n");
-
-        demu_state.seq = DEMU_SEQ_THREAD_INITIALIZED;
-    }
-
-    if (demu_state.seq == DEMU_SEQ_THREAD_INITIALIZED) {
-        DBG("<THREAD_INITIALIZED\n");
-        pthread_cancel(demu_state.thread);
-        pthread_join(demu_state.thread, NULL);
 
         demu_state.seq = DEMU_SEQ_DEVICE_INITIALIZED;
     }
@@ -903,21 +759,8 @@ demu_sigterm(int num)
     exit(0);
 }
 
-static void *
-demu_thread(void *arg)
-{
-    DBG("---->\n");
-
-    for (;;) {
-        sleep(1);
-    }
-
-    DBG("<----\n");
-    return NULL;
-}
-
 static int
-demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned int function)
+demu_initialize(domid_t domid, char *device_str)
 {
     int             rc;
     xc_dominfo_t    dominfo;
@@ -1034,15 +877,9 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     demu_seq_next();
 
-    rc = device_initialize();
+    rc = device_initialize(device_str);
     if (rc < 0)
         goto fail13;
-
-    demu_seq_next();
-
-    rc = pthread_create(&demu_state.thread, NULL, demu_thread, NULL);
-    if (rc != 0)
-        goto fail14;
 
     demu_seq_next();
 
@@ -1050,9 +887,6 @@ demu_initialize(domid_t domid, unsigned int bus, unsigned int device, unsigned i
 
     assert(demu_state.seq == DEMU_SEQ_INITIALIZED);
     return 0;
-
-fail14:
-    DBG("fail14\n");
 
 fail13:
     DBG("fail13\n");
@@ -1214,7 +1048,6 @@ main(int argc, char **argv, char **envp)
     int             index;
     char            *end;
     domid_t         domid;
-    unsigned int    device;
     sigset_t        block;
     int             rc;
     struct pollfd pfd;
@@ -1253,8 +1086,7 @@ main(int argc, char **argv, char **envp)
         }
     }
 
-    if (domain_str == NULL ||
-        device_str == NULL) {
+    if (domain_str == NULL) {
         usage();
         /*NOTREACHED*/
     }
@@ -1262,12 +1094,6 @@ main(int argc, char **argv, char **envp)
     domid = (domid_t)strtol(domain_str, &end, 0);
     if (*end != '\0') {
         fprintf(stderr, "invalid domain '%s'\n", domain_str);
-        exit(1);
-    }
-
-    device = (unsigned int)strtol(device_str, &end, 0);
-    if (*end != '\0') {
-        fprintf(stderr, "invalid device '%s'\n", device_str);
         exit(1);
     }
 
@@ -1290,7 +1116,7 @@ main(int argc, char **argv, char **envp)
 
     sigprocmask(SIG_BLOCK, &block, NULL);
 
-    rc = demu_initialize(domid, 0, device, 0);
+    rc = demu_initialize(domid, device_str);
     if (rc < 0) {
         demu_teardown();
         exit(1);

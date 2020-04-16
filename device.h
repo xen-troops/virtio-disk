@@ -33,7 +33,7 @@
 #include <xenctrl.h>
 #include <xendevicemodel.h>
 
-int device_initialize(void);
+int device_initialize(char *device_str);
 void device_teardown(void);
 
 #endif  /* _DEVICE_H */

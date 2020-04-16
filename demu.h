@@ -44,29 +44,14 @@ void    demu_set_irq(int irq, int level);
 
 #define TARGET_PAGE_SHIFT   12
 #define TARGET_PAGE_SIZE    (1 << TARGET_PAGE_SHIFT)
+#define TARGET_PAGE_MASK    (~(TARGET_PAGE_SIZE-1))
 
 #define	P2ROUNDUP(_x, _a) -(-(_x) & -(_a))
 
-void    *demu_map_guest_pages(xen_pfn_t pfn[], unsigned int n, int populate);
 
-static inline void *demu_map_guest_page(xen_pfn_t pfn, int populate)
-{
-	return demu_map_guest_pages(&pfn, 1, populate);
-}
 
-void    *demu_map_guest_range(uint64_t addr, uint64_t size, int populate);
-
-void    demu_unmap_guest_pages(void *ptr, xen_pfn_t pfn[], unsigned int n,
-                               int depopulate);
-
-static inline void demu_unmap_guest_page(void *ptr, xen_pfn_t pfn,
-                                         int depopulate)
-{
-	return demu_unmap_guest_pages(ptr, &pfn, 1, depopulate);
-}
-
-int     demu_unmap_guest_range(void *ptr, uint64_t addr, uint64_t size,
-                               int depopulate);
+void    *demu_map_guest_range(uint64_t addr, uint64_t size);
+int     demu_unmap_guest_range(void *ptr, uint64_t size);
 
 typedef struct io_ops {
         uint8_t         (*readb)(void *priv, uint64_t addr);
@@ -82,6 +67,11 @@ int demu_register_memory_space(uint64_t start, uint64_t size,
                                const io_ops_t *ops, void *priv);
 
 void demu_deregister_memory_space(uint64_t start);
+
+/* XXX: Get values from libxl */
+#define GUEST_VIRTIO_MMIO_BASE	0x02000000
+#define GUEST_VIRTIO_MMIO_SIZE	0x200
+#define GUEST_VIRTIO_MMIO_SPI	33
 
 #endif  /* _DEMU_H */
 

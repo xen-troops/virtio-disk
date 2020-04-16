@@ -47,16 +47,16 @@
 
 #include "debug.h"
 #include "demu.h"
-#include "mapcache.h"
 #include "device.h"
 
-/* XXX: Get values from libxl */
-#define GUEST_VIRTIO_MMIO_BASE	0x02000000
-#define GUEST_VIRTIO_MMIO_SIZE	0x200
-#define GUEST_VIRTIO_MMIO_SPI	33
+#include "kvm/kvm.h"
+#include <linux/err.h>
 
-/* Magic value ("virt" string) - Read Only */
-#define VIRTIO_MMIO_MAGIC_VALUE	0x000
+/*
+ * XXX:
+ * 1. The initialization of virtio stuff should be refactored.
+ * 2. All virtio-blk parameters must be configured.
+ */
 
 typedef struct _device_memory_state {
     unsigned int index;
@@ -115,10 +115,6 @@ static uint32_t device_memory_readl(void *priv, uint64_t addr)
 
     DBG("%d: offset: 0x%lx\n", state->index, addr);
 
-    /* XXX: For test purposes */
-    if (addr == VIRTIO_MMIO_MAGIC_VALUE)
-        return  ('v' | 'i' << 8 | 'r' << 16 | 't' << 24);
-
     return 0;
 }
 
@@ -140,7 +136,45 @@ static io_ops_t device_memory_ops = {
     .writel = device_memory_writel
 };
 
-int device_initialize(void)
+static struct kvm *kvm_inst;
+
+#define DEFAULT_DEVICE_STR "/dev/mmcblk1p3"
+
+static struct kvm *kvm_init(char *device_str)
+{
+	struct kvm *kvm = calloc(1, sizeof(*kvm));
+	int rc;
+
+	if (!kvm)
+		return ERR_PTR(-ENOMEM);
+
+	if (device_str)
+		kvm->cfg.disk_image[0].filename = device_str;
+	else
+		kvm->cfg.disk_image[0].filename = DEFAULT_DEVICE_STR;
+	kvm->cfg.disk_image[0].readonly = 0;
+	kvm->cfg.disk_image[0].direct = 0;
+
+	kvm->cfg.image_count = 1;
+
+	kvm->nr_disks = kvm->cfg.image_count;
+
+	rc = init_list__init(kvm);
+	if (rc < 0) {
+		DBG ("Initialization failed\n");
+		free(kvm);
+		return ERR_PTR(rc);
+	}
+
+	return kvm;
+}
+
+static void kvm_exit(struct kvm *kvm)
+{
+	init_list__exit(kvm);
+}
+
+int device_initialize(char *device_str)
 {
     int rc;
 
@@ -160,21 +194,35 @@ int device_initialize(void)
 
     device_memory_state.registered = 1;
 
+    kvm_inst = kvm_init(device_str);
+    if (IS_ERR(kvm_inst)) {
+        rc = PTR_ERR(kvm_inst);
+        goto fail2;
+    }
+
     return 0;
+
+fail2:
+    DBG("fail2\n");
+
+    demu_deregister_memory_space(device_memory_state.base);
+    device_memory_state.registered = 0;
 
 fail1:
     DBG("fail1\n");
 
-    return -1;
+    return rc;
 }
 
 void device_teardown(void)
 {
-    if (!device_memory_state.registered)
-        return;
+    if (!IS_ERR_OR_NULL(kvm_inst))
+        kvm_exit(kvm_inst);
 
-    demu_deregister_memory_space(device_memory_state.base);
-    device_memory_state.registered = 0;
+    if (device_memory_state.registered) {
+        demu_deregister_memory_space(device_memory_state.base);
+        device_memory_state.registered = 0;
+    }
 }
 
 /*
