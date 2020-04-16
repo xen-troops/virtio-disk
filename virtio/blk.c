@@ -1,23 +1,23 @@
 #include "kvm/virtio-blk.h"
 
-#include "kvm/virtio-pci-dev.h"
 #include "kvm/disk-image.h"
 #include "kvm/mutex.h"
 #include "kvm/util.h"
 #include "kvm/kvm.h"
-#include "kvm/pci.h"
-#include "kvm/threadpool.h"
-#include "kvm/ioeventfd.h"
-#include "kvm/guest_compat.h"
-#include "kvm/virtio-pci.h"
 #include "kvm/virtio.h"
 
+#include <sys/eventfd.h>
 #include <linux/virtio_ring.h>
 #include <linux/virtio_blk.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/types.h>
 #include <pthread.h>
+
+#include "../demu.h"
+
+#define PCI_DEVICE_ID_VIRTIO_BLK	0x1001
+#define PCI_CLASS_BLK				0x018000
 
 #define VIRTIO_BLK_MAX_DEV		4
 
@@ -56,7 +56,9 @@ struct blk_dev {
 };
 
 static LIST_HEAD(bdevs);
+#if 0
 static int compat_id = -1;
+#endif
 
 void virtio_blk_complete(void *param, long len)
 {
@@ -64,6 +66,7 @@ void virtio_blk_complete(void *param, long len)
 	struct blk_dev *bdev = req->bdev;
 	int queueid = req->vq - bdev->vqs;
 	u8 *status;
+	int i;
 
 	/* status */
 	status	= req->iov[req->out + req->in - 1].iov_base;
@@ -75,6 +78,9 @@ void virtio_blk_complete(void *param, long len)
 
 	if (virtio_queue__should_signal(&bdev->vqs[queueid]))
 		bdev->vdev.ops->signal_vq(req->kvm, &bdev->vdev, queueid);
+
+	for (i = 0; i < req->out + req->in; i++)
+		demu_unmap_guest_range(req->iov[i].iov_base, req->iov[i].iov_len);
 }
 
 static void virtio_blk_do_io_request(struct kvm *kvm, struct virt_queue *vq, struct blk_dev_req *req)
@@ -208,11 +214,14 @@ static int init_vq(struct kvm *kvm, void *dev, u32 vq, u32 page_size, u32 align,
 	struct virt_queue *queue;
 	void *p;
 
+#if 0
 	compat__remove_message(compat_id);
+#endif
 
 	queue		= &bdev->vqs[vq];
 	queue->pfn	= pfn;
-	p		= virtio_get_vq(kvm, queue->pfn, page_size);
+	p		= virtio_get_vq(kvm, queue->pfn, page_size,
+							vring_size(VIRTIO_BLK_QUEUE_SIZE, align));
 
 	vring_init(&queue->vring, VIRTIO_BLK_QUEUE_SIZE, p, align);
 	virtio_init_device_vq(&bdev->vdev, queue);
@@ -324,15 +333,17 @@ static int virtio_blk__init_one(struct kvm *kvm, struct disk_image *disk)
 	};
 
 	virtio_init(kvm, bdev, &bdev->vdev, &blk_dev_virtio_ops,
-		    VIRTIO_DEFAULT_TRANS(kvm), PCI_DEVICE_ID_VIRTIO_BLK,
+			VIRTIO_MMIO, PCI_DEVICE_ID_VIRTIO_BLK,
 		    VIRTIO_ID_BLOCK, PCI_CLASS_BLK);
 
 	list_add_tail(&bdev->list, &bdevs);
 
 	disk_image__set_callback(bdev->disk, virtio_blk_complete);
 
+#if 0
 	if (compat_id == -1)
 		compat_id = virtio_compat_add_message("virtio-blk", "CONFIG_VIRTIO_BLK");
+#endif
 
 	return 0;
 }
@@ -340,6 +351,7 @@ static int virtio_blk__init_one(struct kvm *kvm, struct disk_image *disk)
 static int virtio_blk__exit_one(struct kvm *kvm, struct blk_dev *bdev)
 {
 	list_del(&bdev->list);
+	bdev->vdev.ops->exit(kvm, &bdev->vdev);
 	free(bdev);
 
 	return 0;

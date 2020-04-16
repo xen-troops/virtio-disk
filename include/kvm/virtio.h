@@ -207,12 +207,18 @@ struct virtio_ops {
 int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		struct virtio_ops *ops, enum virtio_trans trans,
 		int device_id, int subsys_id, int class);
+#if 0
 int virtio_compat_add_message(const char *device, const char *config);
+#endif
 const char* virtio_trans_name(enum virtio_trans trans);
 
-static inline void *virtio_get_vq(struct kvm *kvm, u32 pfn, u32 page_size)
+/*
+ * XXX:
+ * 1. There must be corresponding virtio_put_vq to actually unmap it.
+ */
+static inline void *virtio_get_vq(struct kvm *kvm, u32 pfn, u32 page_size, u32 size)
 {
-	return guest_flat_to_host(kvm, (u64)pfn * page_size);
+	return guest_flat_to_host(kvm, (u64)pfn * page_size, size);
 }
 
 static inline void virtio_init_device_vq(struct virtio_device *vdev,

@@ -1,16 +1,25 @@
 #include <linux/virtio_ring.h>
 #include <linux/types.h>
+#include <linux/kernel.h>
 #include <sys/uio.h>
 #include <stdlib.h>
 
-#include "kvm/guest_compat.h"
 #include "kvm/barrier.h"
 #include "kvm/virtio.h"
-#include "kvm/virtio-pci.h"
 #include "kvm/virtio-mmio.h"
 #include "kvm/util.h"
 #include "kvm/kvm.h"
 
+#include "../demu.h"
+
+/*
+ * XXX:
+ * 1. Refactor mapping procedure.
+ */
+void *guest_flat_to_host(struct kvm *kvm, u64 offset, u32 size)
+{
+	return demu_map_guest_range(offset, size);
+}
 
 const char* virtio_trans_name(enum virtio_trans trans)
 {
@@ -98,6 +107,7 @@ u16 virt_queue__get_head_iov(struct virt_queue *vq, struct iovec iov[], u16 *out
 	struct vring_desc *desc;
 	u16 idx;
 	u16 max;
+	u32 mapped = 0;
 
 	idx = head;
 	*out = *in = 0;
@@ -106,7 +116,9 @@ u16 virt_queue__get_head_iov(struct virt_queue *vq, struct iovec iov[], u16 *out
 
 	if (virt_desc__test_flag(vq, &desc[idx], VRING_DESC_F_INDIRECT)) {
 		max = virtio_guest_to_host_u32(vq, desc[idx].len) / sizeof(struct vring_desc);
-		desc = guest_flat_to_host(kvm, virtio_guest_to_host_u64(vq, desc[idx].addr));
+		mapped = virtio_guest_to_host_u32(vq, desc[idx].len);
+		desc = guest_flat_to_host(kvm, virtio_guest_to_host_u64(vq, desc[idx].addr),
+				virtio_guest_to_host_u32(vq, desc[idx].len));
 		idx = 0;
 	}
 
@@ -114,13 +126,17 @@ u16 virt_queue__get_head_iov(struct virt_queue *vq, struct iovec iov[], u16 *out
 		/* Grab the first descriptor, and check it's OK. */
 		iov[*out + *in].iov_len = virtio_guest_to_host_u32(vq, desc[idx].len);
 		iov[*out + *in].iov_base = guest_flat_to_host(kvm,
-							      virtio_guest_to_host_u64(vq, desc[idx].addr));
+				virtio_guest_to_host_u64(vq, desc[idx].addr),
+				virtio_guest_to_host_u32(vq, desc[idx].len));
 		/* If this is an input descriptor, increment that count. */
 		if (virt_desc__test_flag(vq, &desc[idx], VRING_DESC_F_WRITE))
 			(*in)++;
 		else
 			(*out)++;
 	} while ((idx = next_desc(vq, desc, idx, max)) != max);
+
+	if (mapped)
+		demu_unmap_guest_range(desc, mapped);
 
 	return head;
 }
@@ -149,11 +165,13 @@ u16 virt_queue__get_inout_iov(struct kvm *kvm, struct virt_queue *queue,
 		desc = virt_queue__get_desc(queue, idx);
 		addr = virtio_guest_to_host_u64(queue, desc->addr);
 		if (virt_desc__test_flag(queue, desc, VRING_DESC_F_WRITE)) {
-			in_iov[*in].iov_base = guest_flat_to_host(kvm, addr);
+			in_iov[*in].iov_base = guest_flat_to_host(kvm, addr,
+					virtio_guest_to_host_u32(queue, desc->len));
 			in_iov[*in].iov_len = virtio_guest_to_host_u32(queue, desc->len);
 			(*in)++;
 		} else {
-			out_iov[*out].iov_base = guest_flat_to_host(kvm, addr);
+			out_iov[*out].iov_base = guest_flat_to_host(kvm, addr,
+					virtio_guest_to_host_u32(queue, desc->len));
 			out_iov[*out].iov_len = virtio_guest_to_host_u32(queue, desc->len);
 			(*out)++;
 		}
@@ -261,6 +279,7 @@ int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 	void *virtio;
 
 	switch (trans) {
+#if 0
 	case VIRTIO_PCI:
 		virtio = calloc(sizeof(struct virtio_pci), 1);
 		if (!virtio)
@@ -274,6 +293,7 @@ int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		vdev->ops->reset		= virtio_pci__reset;
 		vdev->ops->init(kvm, dev, vdev, device_id, subsys_id, class);
 		break;
+#endif
 	case VIRTIO_MMIO:
 		virtio = calloc(sizeof(struct virtio_mmio), 1);
 		if (!virtio)
@@ -294,6 +314,7 @@ int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 	return 0;
 }
 
+#if 0
 int virtio_compat_add_message(const char *device, const char *config)
 {
 	int len = 1024;
@@ -325,3 +346,4 @@ int virtio_compat_add_message(const char *device, const char *config)
 
 	return compat_id;
 }
+#endif

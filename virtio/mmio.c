@@ -1,17 +1,46 @@
-#include "kvm/devices.h"
 #include "kvm/virtio-mmio.h"
-#include "kvm/ioeventfd.h"
-#include "kvm/ioport.h"
 #include "kvm/virtio.h"
 #include "kvm/kvm.h"
-#include "kvm/kvm-cpu.h"
-#include "kvm/irq.h"
-#include "kvm/fdt.h"
 
 #include <linux/virtio_mmio.h>
+#include <linux/byteorder.h>
 #include <string.h>
 
-static u32 virtio_mmio_io_space_blocks = KVM_VIRTIO_MMIO_AREA;
+#include "../demu.h"
+
+/*
+ * XXX:
+ * 1. ioeventfd doesn't work without vhost support in kernel.
+ * virtio-blk can operate without it, not sure about other virtio backends.
+ * 2. Both irq(s) and mmio range(s) should be configurable and come from
+ * toolstack.
+ */
+
+
+static inline u32 ioport__read32(u32 *data)
+{
+	return le32_to_cpu(*data);
+}
+
+static inline void ioport__write32(u32 *data, u32 value)
+{
+	*data = cpu_to_le32(value);
+}
+
+static u8 virtio_mmio_irq_line = GUEST_VIRTIO_MMIO_SPI;
+
+static int virtio_mmio_get_irq_line(void)
+{
+	return virtio_mmio_irq_line++;
+}
+
+void kvm__irq_trigger(struct kvm *kvm, int irq)
+{
+	demu_set_irq(irq, VIRTIO_IRQ_HIGH);
+	demu_set_irq(irq, VIRTIO_IRQ_LOW);
+}
+
+static u32 virtio_mmio_io_space_blocks = GUEST_VIRTIO_MMIO_BASE;
 
 static u32 virtio_mmio_get_io_space_block(u32 size)
 {
@@ -21,6 +50,7 @@ static u32 virtio_mmio_get_io_space_block(u32 size)
 	return block;
 }
 
+#if 0
 static void virtio_mmio_ioevent_callback(struct kvm *kvm, void *param)
 {
 	struct virtio_mmio_ioevent_param *ioeventfd = param;
@@ -68,6 +98,7 @@ static int virtio_mmio_init_ioeventfd(struct kvm *kvm,
 
 	return 0;
 }
+#endif
 
 int virtio_mmio_signal_vq(struct kvm *kvm, struct virtio_device *vdev, u32 vq)
 {
@@ -84,7 +115,9 @@ static void virtio_mmio_exit_vq(struct kvm *kvm, struct virtio_device *vdev,
 {
 	struct virtio_mmio *vmmio = vdev->virtio;
 
+#if 0
 	ioeventfd__del_event(vmmio->addr + VIRTIO_MMIO_QUEUE_NOTIFY, vq);
+#endif
 	virtio_exit_vq(kvm, vdev, vmmio->dev, vq);
 }
 
@@ -171,7 +204,7 @@ static void virtio_mmio_config_out(struct kvm_cpu *vcpu,
 	case VIRTIO_MMIO_STATUS:
 		vmmio->hdr.status = ioport__read32(data);
 		if (!vmmio->hdr.status) /* Sample endianness on reset */
-			vdev->endian = kvm_cpu__get_endianness(vcpu);
+			vdev->endian = VIRTIO_ENDIAN_HOST;
 		virtio_notify_status(kvm, vdev, vmmio->dev, vmmio->hdr.status);
 		break;
 	case VIRTIO_MMIO_GUEST_FEATURES:
@@ -198,8 +231,10 @@ static void virtio_mmio_config_out(struct kvm_cpu *vcpu,
 	case VIRTIO_MMIO_QUEUE_PFN:
 		val = ioport__read32(data);
 		if (val) {
+#if 0
 			virtio_mmio_init_ioeventfd(vmmio->kvm, vdev,
 						   vmmio->hdr.queue_sel);
+#endif
 			vdev->ops->init_vq(vmmio->kvm, vmmio->dev,
 					   vmmio->hdr.queue_sel,
 					   vmmio->hdr.guest_page_size,
@@ -242,6 +277,7 @@ static void virtio_mmio_mmio_callback(struct kvm_cpu *vcpu,
 		virtio_mmio_config_in(vcpu, offset, data, len, ptr);
 }
 
+#if 0
 #ifdef CONFIG_HAS_LIBFDT
 #define DEVICE_NAME_MAX_LEN 32
 static
@@ -287,6 +323,7 @@ void virtio_mmio_assign_irq(struct device_header *dev_hdr)
 						 dev_hdr);
 	vmmio->irq = irq__alloc_line();
 }
+#endif
 
 int virtio_mmio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		     int device_id, int subsys_id, int class)
@@ -308,12 +345,16 @@ int virtio_mmio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		.queue_num_max	= 256,
 	};
 
+#if 0
 	vmmio->dev_hdr = (struct device_header) {
 		.bus_type	= DEVICE_BUS_MMIO,
 		.data		= generate_virtio_mmio_fdt_node,
 	};
 
 	device__register(&vmmio->dev_hdr);
+#endif
+
+	vmmio->irq = virtio_mmio_get_irq_line();
 
 	/*
 	 * Instantiate guest virtio-mmio devices using kernel command line

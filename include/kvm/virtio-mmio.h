@@ -3,6 +3,7 @@
 
 #include <linux/types.h>
 #include <linux/virtio_mmio.h>
+#include "kvm/virtio.h"
 
 #define VIRTIO_MMIO_MAX_VQ	32
 #define VIRTIO_MMIO_MAX_CONFIG	1
@@ -10,10 +11,12 @@
 
 struct kvm;
 
+#if 0
 struct virtio_mmio_ioevent_param {
 	struct virtio_device	*vdev;
 	u32			vq;
 };
+#endif
 
 struct virtio_mmio_hdr {
 	char	magic[4];
@@ -47,8 +50,10 @@ struct virtio_mmio {
 	struct kvm		*kvm;
 	u8			irq;
 	struct virtio_mmio_hdr	hdr;
+#if 0
 	struct device_header	dev_hdr;
 	struct virtio_mmio_ioevent_param ioeventfds[VIRTIO_MMIO_MAX_VQ];
+#endif
 };
 
 int virtio_mmio_signal_vq(struct kvm *kvm, struct virtio_device *vdev, u32 vq);
@@ -57,5 +62,7 @@ int virtio_mmio_exit(struct kvm *kvm, struct virtio_device *vdev);
 int virtio_mmio_reset(struct kvm *kvm, struct virtio_device *vdev);
 int virtio_mmio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		      int device_id, int subsys_id, int class);
+#if 0
 void virtio_mmio_assign_irq(struct device_header *dev_hdr);
+#endif
 #endif

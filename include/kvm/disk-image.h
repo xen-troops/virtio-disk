@@ -3,7 +3,6 @@
 
 #include "kvm/read-write.h"
 #include "kvm/util.h"
-#include "kvm/parse-options.h"
 
 #include <linux/types.h>
 #include <linux/fs.h>	/* for BLKGETSIZE64 */
@@ -34,6 +33,7 @@ enum {
 #define MAX_DISK_IMAGES         4
 
 struct disk_image;
+struct kvm;
 
 struct disk_image_operations {
 	ssize_t (*read)(struct disk_image *disk, u64 sector, const struct iovec *iov,
@@ -78,7 +78,9 @@ struct disk_image {
 	int				debug_iodelay;
 };
 
+#if 0
 int disk_img_name_parser(const struct option *opt, const char *arg, int unset);
+#endif
 int disk_image__init(struct kvm *kvm);
 int disk_image__exit(struct kvm *kvm);
 struct disk_image *disk_image__new(int fd, u64 size, struct disk_image_operations *ops, int mmap);

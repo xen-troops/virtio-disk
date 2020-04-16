@@ -10,6 +10,7 @@ int debug_iodelay;
 
 static int disk_image__close(struct disk_image *disk);
 
+#if 0
 int disk_img_name_parser(const struct option *opt, const char *arg, int unset)
 {
 	const char *cur;
@@ -50,6 +51,7 @@ int disk_img_name_parser(const struct option *opt, const char *arg, int unset)
 
 	return 0;
 }
+#endif
 
 struct disk_image *disk_image__new(int fd, u64 size,
 				   struct disk_image_operations *ops,

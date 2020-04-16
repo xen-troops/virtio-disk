@@ -1,5 +1,4 @@
 #include "kvm/kvm.h"
-#include "kvm/kvm-cpu.h"
 #include "kvm/rbtree-interval.h"
 #include "kvm/brlock.h"
 
@@ -12,6 +11,16 @@
 #include <linux/rbtree.h>
 #include <linux/err.h>
 #include <errno.h>
+
+#include "../debug.h"
+
+/*
+ * XXX
+ * 1. We don't expect concurrent access to mmio_tree now, so we can avoid
+ * using brlock_sem. Should be reconsidered when we handle several mmio ranges.
+ * 2. This KVM's mmio range tracking implementation doubles DEMU's
+ * implementation. We should choose which one to use and rework.
+ */
 
 #define mmio_node(n) rb_entry(n, struct mmio_mapping, node)
 
@@ -64,7 +73,9 @@ int kvm__register_mmio(struct kvm *kvm, u64 phys_addr, u64 phys_addr_len, bool c
 			void *ptr)
 {
 	struct mmio_mapping *mmio;
+#if 0
 	struct kvm_coalesced_mmio_zone zone;
+#endif
 	int ret;
 
 	mmio = malloc(sizeof(*mmio));
@@ -77,6 +88,7 @@ int kvm__register_mmio(struct kvm *kvm, u64 phys_addr, u64 phys_addr_len, bool c
 		.ptr	= ptr,
 	};
 
+#if 0
 	if (coalesce) {
 		zone = (struct kvm_coalesced_mmio_zone) {
 			.addr	= phys_addr,
@@ -88,9 +100,10 @@ int kvm__register_mmio(struct kvm *kvm, u64 phys_addr, u64 phys_addr_len, bool c
 			return -errno;
 		}
 	}
-	br_write_lock(kvm);
+#endif
+	/*br_write_lock(kvm);*/
 	ret = mmio_insert(&mmio_tree, mmio);
-	br_write_unlock(kvm);
+	/*br_write_unlock(kvm);*/
 
 	return ret;
 }
@@ -98,23 +111,27 @@ int kvm__register_mmio(struct kvm *kvm, u64 phys_addr, u64 phys_addr_len, bool c
 bool kvm__deregister_mmio(struct kvm *kvm, u64 phys_addr)
 {
 	struct mmio_mapping *mmio;
+#if 0
 	struct kvm_coalesced_mmio_zone zone;
+#endif
 
-	br_write_lock(kvm);
+	/*br_write_lock(kvm);*/
 	mmio = mmio_search_single(&mmio_tree, phys_addr);
 	if (mmio == NULL) {
-		br_write_unlock(kvm);
+		/*br_write_unlock(kvm);*/
 		return false;
 	}
 
+#if 0
 	zone = (struct kvm_coalesced_mmio_zone) {
 		.addr	= phys_addr,
 		.size	= 1,
 	};
 	ioctl(kvm->vm_fd, KVM_UNREGISTER_COALESCED_MMIO, &zone);
+#endif
 
 	rb_int_erase(&mmio_tree, &mmio->node);
-	br_write_unlock(kvm);
+	/*br_write_unlock(kvm);*/
 
 	free(mmio);
 	return true;
@@ -124,18 +141,18 @@ bool kvm__emulate_mmio(struct kvm_cpu *vcpu, u64 phys_addr, u8 *data, u32 len, u
 {
 	struct mmio_mapping *mmio;
 
-	br_read_lock(vcpu->kvm);
+	/*br_read_lock(vcpu->kvm);*/
 	mmio = mmio_search(&mmio_tree, phys_addr, len);
 
 	if (mmio)
 		mmio->mmio_fn(vcpu, phys_addr, data, len, is_write, mmio->ptr);
 	else {
-		if (vcpu->kvm->cfg.mmio_debug)
+		if (1)
 			fprintf(stderr,	"Warning: Ignoring MMIO %s at %016llx (length %u)\n",
 				to_direction(is_write),
 				(unsigned long long)phys_addr, len);
 	}
-	br_read_unlock(vcpu->kvm);
+	/*br_read_unlock(vcpu->kvm);*/
 
 	return true;
 }
