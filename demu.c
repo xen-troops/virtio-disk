@@ -804,7 +804,9 @@ demu_initialize(domid_t domid, char *device_str)
     DBG("%d vCPU(s)\n", demu_state.vcpus);
 
     /* XXX: Recognize self domain_id */
-    (void)xc_domain_set_target(demu_state.xch, 1, demu_state.domid);
+    rc = xc_domain_set_target(demu_state.xch, 1, demu_state.domid);
+    if (rc < 0)
+        goto fail5;
 
     rc = xendevicemodel_create_ioreq_server(demu_state.xdh,
                                             demu_state.domid, 1,
