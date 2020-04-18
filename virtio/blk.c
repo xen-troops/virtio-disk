@@ -218,6 +218,9 @@ static int init_vq(struct kvm *kvm, void *dev, u32 vq, u32 page_size, u32 align,
 	compat__remove_message(compat_id);
 #endif
 
+	BUG_ON(align != PAGE_SIZE);
+	BUG_ON(page_size != PAGE_SIZE);
+
 	queue		= &bdev->vqs[vq];
 	queue->pfn	= pfn;
 	p		= virtio_get_vq(kvm, queue->pfn, page_size,
@@ -250,6 +253,7 @@ static int init_vq(struct kvm *kvm, void *dev, u32 vq, u32 page_size, u32 align,
 static void exit_vq(struct kvm *kvm, void *dev, u32 vq)
 {
 	struct blk_dev *bdev = dev;
+	struct virt_queue *queue;
 
 	if (vq != 0)
 		return;
@@ -259,6 +263,10 @@ static void exit_vq(struct kvm *kvm, void *dev, u32 vq)
 	pthread_join(bdev->io_thread, NULL);
 
 	disk_image__wait(bdev->disk);
+
+	queue = &bdev->vqs[vq];
+	demu_unmap_guest_range(queue->vring.desc,
+			vring_size(VIRTIO_BLK_QUEUE_SIZE, PAGE_SIZE));
 }
 
 static int notify_vq(struct kvm *kvm, void *dev, u32 vq)
