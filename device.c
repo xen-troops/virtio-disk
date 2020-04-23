@@ -194,6 +194,11 @@ int device_initialize(char *device_str)
 
     device_memory_state.registered = 1;
 
+#ifdef MAP_IN_ADVANCE
+    /* either map here or during first demu_get_host_addr request */
+    /*demu_map_whole_guest();*/
+#endif
+
     kvm_inst = kvm_init(device_str);
     if (IS_ERR(kvm_inst)) {
         rc = PTR_ERR(kvm_inst);
@@ -218,6 +223,10 @@ void device_teardown(void)
 {
     if (!IS_ERR_OR_NULL(kvm_inst))
         kvm_exit(kvm_inst);
+
+#ifdef MAP_IN_ADVANCE
+    demu_unmap_whole_guest();
+#endif
 
     if (device_memory_state.registered) {
         demu_deregister_memory_space(device_memory_state.base);

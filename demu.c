@@ -81,6 +81,53 @@ static unsigned long count;
 
 bool do_debug_print = true;
 
+#ifdef MAP_IN_ADVANCE
+static void *host_addr;
+
+/* We assume guest's address space as following */
+#define GUEST_BASE 0x40000000
+#define GUEST_SIZE 0x20000000
+
+void demu_map_whole_guest(void)
+{
+	if (host_addr)
+		return;
+
+	host_addr = demu_map_guest_range(GUEST_BASE, GUEST_SIZE);
+	if (!host_addr) {
+		DBG("Cannot map guest memory\n");
+		assert(FALSE);
+	}
+}
+
+void demu_unmap_whole_guest(void)
+{
+	if (host_addr) {
+		demu_unmap_guest_range(host_addr, GUEST_SIZE);
+		host_addr = NULL;
+	}
+}
+
+void *demu_get_host_addr(uint64_t offset)
+{
+	void *addr;
+
+	demu_map_whole_guest();
+
+	if (offset >= GUEST_BASE && offset < GUEST_BASE + GUEST_SIZE) {
+		addr = host_addr + (offset - GUEST_BASE);
+		/*DBG("translate guest 0x%llx to host 0x%llx\n",
+				(unsigned long long)offset, (unsigned long long)addr);*/
+		return addr;
+	}
+
+	DBG("Cannot translate guest 0x%lx", (unsigned long)offset);
+	assert(FALSE);
+
+	return NULL;
+}
+#endif
+
 #define mb() asm volatile ("" : : : "memory")
 
 enum {
@@ -175,18 +222,18 @@ demu_set_irq(int irq, int level)
 }
 
 static inline void *
-demu_map_guest_pages(xen_pfn_t pfn[], unsigned int n)
+demu_map_guest_pages(xen_pfn_t pfn[], int err[], unsigned int n)
 {
     return xenforeignmemory_map(demu_state.xfh, demu_state.domid,
                                 PROT_READ | PROT_WRITE, n,
-                                pfn, NULL);
+                                pfn, err);
 }
 
 void *
 demu_map_guest_range(uint64_t addr, uint64_t size)
 {
     xen_pfn_t   *pfn;
-    int         i, n;
+    int         i, n, *err;
     void        *ptr;
 
     count ++;
@@ -200,17 +247,32 @@ demu_map_guest_range(uint64_t addr, uint64_t size)
     if (pfn == NULL)
         goto fail1;
 
+    err = malloc(sizeof (int) * n);
+    if (err == NULL)
+        goto fail2;
+
     for (i = 0; i < n; i++)
         pfn[i] = (addr >> TARGET_PAGE_SHIFT) + i;
     
-    ptr = demu_map_guest_pages(pfn, n);
-    if (ptr == NULL)
-        goto fail2;
+    ptr = demu_map_guest_pages(pfn, err, n);
+    if (ptr == NULL) {
+        for (i = 0; i < n; i++) {
+            if (err[i])
+                DBG("Failed to map pfn[%d] %"PRIx64": %d\n", i, pfn[i], err[i]);
+        }
+        goto fail3;
+    }
     
+    free(err);
     free(pfn);
 
     return ptr + (addr % TARGET_PAGE_SIZE);
     
+fail3:
+    DBG("fail3\n");
+
+    free(err);
+
 fail2:
     DBG("fail2\n");
     

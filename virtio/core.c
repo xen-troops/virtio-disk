@@ -18,7 +18,11 @@
  */
 void *guest_flat_to_host(struct kvm *kvm, u64 offset, u32 size)
 {
+#ifndef MAP_IN_ADVANCE
 	return demu_map_guest_range(offset, size);
+#else
+	return demu_get_host_addr(offset);
+#endif
 }
 
 const char* virtio_trans_name(enum virtio_trans trans)
@@ -107,7 +111,9 @@ u16 virt_queue__get_head_iov(struct virt_queue *vq, struct iovec iov[], u16 *out
 	struct vring_desc *desc;
 	u16 idx;
 	u16 max;
+#ifndef MAP_IN_ADVANCE
 	u32 mapped = 0;
+#endif
 
 	idx = head;
 	*out = *in = 0;
@@ -116,7 +122,9 @@ u16 virt_queue__get_head_iov(struct virt_queue *vq, struct iovec iov[], u16 *out
 
 	if (virt_desc__test_flag(vq, &desc[idx], VRING_DESC_F_INDIRECT)) {
 		max = virtio_guest_to_host_u32(vq, desc[idx].len) / sizeof(struct vring_desc);
+#ifndef MAP_IN_ADVANCE
 		mapped = virtio_guest_to_host_u32(vq, desc[idx].len);
+#endif
 		desc = guest_flat_to_host(kvm, virtio_guest_to_host_u64(vq, desc[idx].addr),
 				virtio_guest_to_host_u32(vq, desc[idx].len));
 		idx = 0;
@@ -135,8 +143,10 @@ u16 virt_queue__get_head_iov(struct virt_queue *vq, struct iovec iov[], u16 *out
 			(*out)++;
 	} while ((idx = next_desc(vq, desc, idx, max)) != max);
 
+#ifndef MAP_IN_ADVANCE
 	if (mapped)
 		demu_unmap_guest_range(desc, mapped);
+#endif
 
 	return head;
 }

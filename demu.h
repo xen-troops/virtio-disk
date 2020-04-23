@@ -49,6 +49,11 @@ void    demu_set_irq(int irq, int level);
 #define	P2ROUNDUP(_x, _a) -(-(_x) & -(_a))
 
 
+#ifdef MAP_IN_ADVANCE
+void *demu_get_host_addr(uint64_t offset);
+void demu_map_whole_guest(void);
+void demu_unmap_whole_guest(void);
+#endif
 
 void    *demu_map_guest_range(uint64_t addr, uint64_t size);
 int     demu_unmap_guest_range(void *ptr, uint64_t size);
