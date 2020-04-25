@@ -48,6 +48,7 @@
 #include "debug.h"
 #include "demu.h"
 #include "device.h"
+#include "mapcache.h"
 
 #include "kvm/kvm.h"
 #include <linux/err.h>
@@ -226,6 +227,8 @@ void device_teardown(void)
 
 #ifdef MAP_IN_ADVANCE
     demu_unmap_whole_guest();
+#else
+    mapcache_invalidate();
 #endif
 
     if (device_memory_state.registered) {

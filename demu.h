@@ -55,6 +55,21 @@ void demu_map_whole_guest(void);
 void demu_unmap_whole_guest(void);
 #endif
 
+
+void *demu_map_guest_pages(xen_pfn_t pfn[], int err[], unsigned int n);
+
+static inline void *demu_map_guest_page(xen_pfn_t pfn)
+{
+    return demu_map_guest_pages(&pfn, NULL, 1);
+}
+
+void demu_unmap_guest_pages(void *ptr, unsigned int n);
+
+static inline void demu_unmap_guest_page(void *ptr)
+{
+    return demu_unmap_guest_pages(ptr, 1);
+}
+
 void    *demu_map_guest_range(uint64_t addr, uint64_t size);
 int     demu_unmap_guest_range(void *ptr, uint64_t size);
 

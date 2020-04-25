@@ -65,6 +65,7 @@
 #include "debug.h"
 #include "device.h"
 #include "demu.h"
+#include "mapcache.h"
 
 #include "kvm/kvm.h"
 
@@ -77,7 +78,7 @@
  * 5. Sync with recent kvmtool changes.
  */
 
-static unsigned long count;
+/*static unsigned long count;*/
 
 bool do_debug_print = true;
 
@@ -221,7 +222,7 @@ demu_set_irq(int irq, int level)
                                  irq, level);
 }
 
-static inline void *
+void *
 demu_map_guest_pages(xen_pfn_t pfn[], int err[], unsigned int n)
 {
     return xenforeignmemory_map(demu_state.xfh, demu_state.domid,
@@ -236,9 +237,25 @@ demu_map_guest_range(uint64_t addr, uint64_t size)
     int         i, n, *err;
     void        *ptr;
 
-    count ++;
+    /*DBG("%"PRIx64"+%"PRIx64" (%lu)\n", addr, size, ++count);*/
 
-    /*DBG("%"PRIx64"+%"PRIx64" (%lu)\n", addr, size, count);*/
+    /*
+     * Insert small descs into mapcache.
+     * XXX We assume the small desc are: head, header and status.
+     * iovs won't be passed into mapcache, as their size is at least
+     * a page size. This should be rewritten more clearly probably by
+     * inserting the corresponding descs into mapcache when retrieving them
+     * in virt_queue__get_head_iov().
+     */
+    if (size < TARGET_PAGE_SIZE) {
+        BUG_ON((addr & ~TARGET_PAGE_MASK) + size > TARGET_PAGE_SIZE);
+
+        ptr = mapcache_lookup(addr >> TARGET_PAGE_SHIFT);
+        if (ptr == NULL)
+            return NULL;
+
+        return ptr + (addr & ~TARGET_PAGE_MASK);
+    }
 
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
     n = size >> TARGET_PAGE_SHIFT;
@@ -266,7 +283,7 @@ demu_map_guest_range(uint64_t addr, uint64_t size)
     free(err);
     free(pfn);
 
-    return ptr + (addr % TARGET_PAGE_SIZE);
+    return ptr + (addr & ~TARGET_PAGE_MASK);
     
 fail3:
     DBG("fail3\n");
@@ -285,7 +302,7 @@ fail1:
     return NULL;
 }
 
-static inline void
+void
 demu_unmap_guest_pages(void *ptr, unsigned int n)
 {
     xenforeignmemory_unmap(demu_state.xfh, ptr, n);
@@ -296,9 +313,11 @@ demu_unmap_guest_range(void *ptr, uint64_t size)
 {
     int n;
 
-    count --;
+    /*DBG("%p+%"PRIx64" (%lu)\n", ptr, size, --count);*/
 
-    /*DBG("%p+%"PRIx64" (%lu)\n", ptr, size, count);*/
+    /* Don't unmap small descs, keep them in mapcache */
+    if (size < TARGET_PAGE_SIZE)
+        return 0;
 
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
     n = size >> TARGET_PAGE_SHIFT;
@@ -608,7 +627,7 @@ demu_handle_ioreq(ioreq_t *ioreq)
 
     /* XXX: Do we need this? */
     case IOREQ_TYPE_INVALIDATE:
-        assert(FALSE);
+        mapcache_invalidate();
         break;
 
     default:

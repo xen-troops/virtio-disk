@@ -30,7 +30,7 @@
 #ifndef  _MAPCACHE_H
 #define  _MAPCACHE_H
 
-uint8_t *mapcache_lookup(xen_pfn_t pfn);
+void *mapcache_lookup(xen_pfn_t pfn);
 void    mapcache_invalidate(void);
 
 #endif  /* _MAPCACHE_H */

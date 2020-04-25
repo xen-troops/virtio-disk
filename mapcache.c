@@ -39,14 +39,21 @@
 
 #include <xenctrl.h>
 
+/*
+ * XXX:
+ * 1. Access to mapcache must be protected if invalidation is used at runtime.
+ */
+
 #include "debug.h"
 #include "demu.h"
 
 #define FALSE 0
 #define TRUE  1
 
+/*static unsigned long count;*/
+
 typedef struct mapcache_entry {
-    uint8_t     *ptr;
+    void     *ptr;
     xen_pfn_t   pfn;
     uint64_t    epoch;
 } mapcache_entry_t;
@@ -59,13 +66,14 @@ typedef struct mapcache_entry {
 static mapcache_entry_t mapcache[MAPCACHE_BUCKET_SIZE *
                                  MAPCACHE_BUCKET_COUNT];
 static uint64_t mapcache_epoch;
+static int mapcache_empty = 1;
 
-static inline uint8_t *
+static inline void *
 __mapcache_lookup(xen_pfn_t pfn)
 {
     int     bucket;
     int     i;
-    uint8_t *ptr;
+    void *ptr;
 
     bucket = pfn % MAPCACHE_BUCKET_COUNT;
 
@@ -78,6 +86,7 @@ __mapcache_lookup(xen_pfn_t pfn)
         if (entry->pfn == pfn) {
             entry->epoch = mapcache_epoch++;
             ptr = entry->ptr;
+            break;
         }
     }
 
@@ -91,7 +100,7 @@ __mapcache_fault(xen_pfn_t pfn)
     int         i;
     uint64_t    oldest_epoch;
 
-    DBG("%"PRIx64"\n", pfn);
+    /*DBG("%"PRIx64"\n", pfn);*/
 
     bucket = pfn % MAPCACHE_BUCKET_COUNT;
 
@@ -114,22 +123,27 @@ __mapcache_fault(xen_pfn_t pfn)
             continue;
 
         if (entry->ptr != NULL) {
-            demu_unmap_guest_page(entry->ptr, entry->pfn, FALSE);
+            /*DBG("unmap page %"PRIx64": %p (%lu)\n", entry->pfn, entry->ptr, --count);*/
+            demu_unmap_guest_page(entry->ptr);
             entry->ptr = NULL;
         }
 
-        entry->ptr = demu_map_guest_page(pfn, FALSE);
-        if (entry->ptr != NULL)
+        entry->ptr = demu_map_guest_page(pfn);
+        if (entry->ptr != NULL) {
             entry->pfn = pfn;
+            mapcache_empty = 0;
+        }
+
+        /*DBG("map page %"PRIx64": %p (%lu)\n", entry->pfn, entry->ptr, ++count);*/
 
         break;
     }
 }
 
-uint8_t *
+void *
 mapcache_lookup(xen_pfn_t pfn)
 {
-    uint8_t         *ptr;
+    void         *ptr;
     int             faulted;
 
     faulted = 0;
@@ -159,14 +173,20 @@ mapcache_invalidate(void)
 
     DBG("\n");
 
+    if (mapcache_empty)
+        return;
+
     for (i = 0; i < MAPCACHE_BUCKET_SIZE * MAPCACHE_BUCKET_COUNT; i++) {
         mapcache_entry_t *entry = &mapcache[i];
 
         if (entry->ptr != NULL) {
-            munmap(entry->ptr, TARGET_PAGE_SIZE);
+            /*DBG("unmap page %"PRIx64": %p (%lu)\n", entry->pfn, entry->ptr, --count);*/
+            demu_unmap_guest_page(entry->ptr);
             entry->ptr = NULL;
         }
     }
+
+    mapcache_empty = 1;
 }
 
 /*
