@@ -82,6 +82,8 @@
 
 bool do_debug_print = true;
 
+#define MAPCACHE_IN_THRESHOLD	0x30
+
 #ifdef MAP_IN_ADVANCE
 static void *host_addr;
 
@@ -241,13 +243,13 @@ demu_map_guest_range(uint64_t addr, uint64_t size)
 
     /*
      * Insert small descs into mapcache.
-     * XXX We assume the small desc are: head, header and status.
-     * iovs won't be passed into mapcache, as their size is at least
-     * a page size. This should be rewritten more clearly probably by
-     * inserting the corresponding descs into mapcache when retrieving them
-     * in virt_queue__get_head_iov().
+     * XXX We assume the small desc are: header and status.
+     * nothing else (data iovs, desc head) won't be passed into mapcache,
+     * as their size is bigger. This should be rewritten more clearly
+     * probably by inserting the corresponding descs into mapcache when
+     * retrieving them in virt_queue__get_head_iov().
      */
-    if (size < TARGET_PAGE_SIZE) {
+    if (size < MAPCACHE_IN_THRESHOLD) {
         BUG_ON((addr & ~TARGET_PAGE_MASK) + size > TARGET_PAGE_SIZE);
 
         ptr = mapcache_lookup(addr >> TARGET_PAGE_SHIFT);
@@ -316,7 +318,7 @@ demu_unmap_guest_range(void *ptr, uint64_t size)
     /*DBG("%p+%"PRIx64" (%lu)\n", ptr, size, --count);*/
 
     /* Don't unmap small descs, keep them in mapcache */
-    if (size < TARGET_PAGE_SIZE)
+    if (size < MAPCACHE_IN_THRESHOLD)
         return 0;
 
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
