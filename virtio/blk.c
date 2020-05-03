@@ -139,6 +139,7 @@ static void virtio_blk_do_io(struct kvm *kvm, struct virt_queue *vq, struct blk_
 	u16 head;
 
 	while (virt_queue__available(vq)) {
+		demu_mapcache_mutex_lock();
 		head		= virt_queue__pop(vq);
 		req		= &bdev->reqs[head];
 		req->head	= virt_queue__get_head_iov(vq, req->iov, &req->out,
@@ -146,6 +147,7 @@ static void virtio_blk_do_io(struct kvm *kvm, struct virt_queue *vq, struct blk_
 		req->vq		= vq;
 
 		virtio_blk_do_io_request(kvm, vq, req);
+		demu_mapcache_mutex_unlock();
 	}
 }
 

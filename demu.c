@@ -68,6 +68,7 @@
 #include "mapcache.h"
 
 #include "kvm/kvm.h"
+#include "kvm/mutex.h"
 
 /*
  * XXX:
@@ -222,6 +223,18 @@ demu_set_irq(int irq, int level)
 {
     xendevicemodel_set_irq_level(demu_state.xdh, demu_state.domid,
                                  irq, level);
+}
+
+static struct mutex mapcache_mutex = MUTEX_INITIALIZER;
+
+void demu_mapcache_mutex_lock(void)
+{
+    mutex_lock(&mapcache_mutex);
+}
+
+void demu_mapcache_mutex_unlock(void)
+{
+    mutex_unlock(&mapcache_mutex);
 }
 
 void *
@@ -627,9 +640,10 @@ demu_handle_ioreq(ioreq_t *ioreq)
         demu_handle_io(space, ioreq, TRUE);
         break;
 
-    /* XXX: Do we need this? */
     case IOREQ_TYPE_INVALIDATE:
+        demu_mapcache_mutex_lock();
         mapcache_invalidate();
+        demu_mapcache_mutex_unlock();
         break;
 
     default:

@@ -55,6 +55,8 @@ void demu_map_whole_guest(void);
 void demu_unmap_whole_guest(void);
 #endif
 
+void demu_mapcache_mutex_lock(void);
+void demu_mapcache_mutex_unlock(void);
 
 void *demu_map_guest_pages(xen_pfn_t pfn[], int err[], unsigned int n);
 

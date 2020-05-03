@@ -171,7 +171,7 @@ mapcache_invalidate(void)
 {
     int i;
 
-    DBG("\n");
+    /*DBG("\n");*/
 
     if (mapcache_empty)
         return;
@@ -183,9 +183,12 @@ mapcache_invalidate(void)
             /*DBG("unmap page %"PRIx64": %p (%lu)\n", entry->pfn, entry->ptr, --count);*/
             demu_unmap_guest_page(entry->ptr);
             entry->ptr = NULL;
+            entry->pfn = 0;
+            entry->epoch = 0;
         }
     }
 
+    mapcache_epoch = 0;
     mapcache_empty = 1;
 }
 
