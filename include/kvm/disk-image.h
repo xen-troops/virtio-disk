@@ -56,6 +56,9 @@ struct disk_image_params {
 	const char *tpgt;
 	bool readonly;
 	bool direct;
+
+	u32 addr;
+	u8 irq;
 };
 
 struct disk_image {
@@ -76,6 +79,9 @@ struct disk_image {
 	const char			*wwpn;
 	const char			*tpgt;
 	int				debug_iodelay;
+
+	u32 addr;
+	u8 irq;
 };
 
 #if 0

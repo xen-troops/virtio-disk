@@ -284,7 +284,7 @@ void virtio_notify_status(struct kvm *kvm, struct virtio_device *vdev,
 
 int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		struct virtio_ops *ops, enum virtio_trans trans,
-		int device_id, int subsys_id, int class)
+		int device_id, int subsys_id, int class, u32 addr, u8 irq)
 {
 	void *virtio;
 
@@ -315,7 +315,7 @@ int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		vdev->ops->init			= virtio_mmio_init;
 		vdev->ops->exit			= virtio_mmio_exit;
 		vdev->ops->reset		= virtio_mmio_reset;
-		vdev->ops->init(kvm, dev, vdev, device_id, subsys_id, class);
+		vdev->ops->init(kvm, dev, vdev, device_id, subsys_id, class, addr, irq);
 		break;
 	default:
 		return -1;

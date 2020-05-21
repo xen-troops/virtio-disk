@@ -27,28 +27,10 @@ static inline void ioport__write32(u32 *data, u32 value)
 	*data = cpu_to_le32(value);
 }
 
-static u8 virtio_mmio_irq_line = GUEST_VIRTIO_MMIO_SPI;
-
-static int virtio_mmio_get_irq_line(void)
-{
-	/*return virtio_mmio_irq_line++;*/
-	return virtio_mmio_irq_line;
-}
-
 void kvm__irq_trigger(struct kvm *kvm, int irq)
 {
 	demu_set_irq(irq, VIRTIO_IRQ_HIGH);
 	demu_set_irq(irq, VIRTIO_IRQ_LOW);
-}
-
-static u32 virtio_mmio_io_space_blocks = GUEST_VIRTIO_MMIO_BASE;
-
-static u32 virtio_mmio_get_io_space_block(u32 size)
-{
-	u32 block = virtio_mmio_io_space_blocks;
-	/*virtio_mmio_io_space_blocks += size;*/
-
-	return block;
 }
 
 #if 0
@@ -327,11 +309,11 @@ void virtio_mmio_assign_irq(struct device_header *dev_hdr)
 #endif
 
 int virtio_mmio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
-		     int device_id, int subsys_id, int class)
+		     int device_id, int subsys_id, int class, u32 addr, u8 irq)
 {
 	struct virtio_mmio *vmmio = vdev->virtio;
 
-	vmmio->addr	= virtio_mmio_get_io_space_block(VIRTIO_MMIO_IO_SIZE);
+	vmmio->addr	= addr;
 	vmmio->kvm	= kvm;
 	vmmio->dev	= dev;
 
@@ -355,7 +337,7 @@ int virtio_mmio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 	device__register(&vmmio->dev_hdr);
 #endif
 
-	vmmio->irq = virtio_mmio_get_irq_line();
+	vmmio->irq = irq;
 
 	/*
 	 * Instantiate guest virtio-mmio devices using kernel command line

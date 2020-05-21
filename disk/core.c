@@ -191,6 +191,9 @@ static struct disk_image **disk_image__open_all(struct kvm *kvm)
 			goto error;
 		}
 		disks[i]->debug_iodelay = kvm->cfg.debug_iodelay;
+
+		disks[i]->addr = params[i].addr;
+		disks[i]->irq = params[i].irq;
 	}
 
 	return disks;

@@ -150,6 +150,8 @@ static struct kvm *kvm_init(char *device_str)
 	kvm->cfg.disk_image[0].filename = device_str;
 	kvm->cfg.disk_image[0].readonly = 0;
 	kvm->cfg.disk_image[0].direct = 0;
+	kvm->cfg.disk_image[0].addr = GUEST_VIRTIO_MMIO_BASE;
+	kvm->cfg.disk_image[0].irq = GUEST_VIRTIO_MMIO_SPI;
 
 	kvm->cfg.image_count = 1;
 

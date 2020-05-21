@@ -199,14 +199,14 @@ struct virtio_ops {
 	int (*signal_config)(struct kvm *kvm, struct virtio_device *vdev);
 	void (*notify_status)(struct kvm *kvm, void *dev, u32 status);
 	int (*init)(struct kvm *kvm, void *dev, struct virtio_device *vdev,
-		    int device_id, int subsys_id, int class);
+		    int device_id, int subsys_id, int class, u32 addr, u8 irq);
 	int (*exit)(struct kvm *kvm, struct virtio_device *vdev);
 	int (*reset)(struct kvm *kvm, struct virtio_device *vdev);
 };
 
 int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		struct virtio_ops *ops, enum virtio_trans trans,
-		int device_id, int subsys_id, int class);
+		int device_id, int subsys_id, int class, u32 addr, u8 irq);
 #if 0
 int virtio_compat_add_message(const char *device, const char *config);
 #endif
