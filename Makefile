@@ -2,6 +2,7 @@ TARGET = demu
 
 OBJS :=	device.o \
 	mapcache.o \
+	xs_dev.o \
 	demu.o
 
 
