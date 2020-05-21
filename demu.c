@@ -66,9 +66,13 @@
 #include "device.h"
 #include "demu.h"
 #include "mapcache.h"
+#include "xs_dev.h"
 
 #include "kvm/kvm.h"
 #include "kvm/mutex.h"
+
+#define XS_DISK_TYPE	"virtio_disk"
+static char *device_str;
 
 /*
  * XXX:
@@ -133,21 +137,19 @@ void *demu_get_host_addr(uint64_t offset)
 #endif
 
 #define mb() asm volatile ("" : : : "memory")
+#define __max(_x, _y) (((_x) > (_y)) ? (_x) : (_y))
 
 enum {
-    DEMU_OPT_DOMAIN,
     DEMU_OPT_DEVICE,
     DEMU_NR_OPTS
     };
 
 static struct option demu_option[] = {
-    {"domain", 1, NULL, 0},
     {"device", 1, NULL, 0},
     {NULL, 0, NULL, 0}
 };
 
 static const char *demu_option_text[] = {
-    "<domid>",
     "<device>",
     NULL
 };
@@ -173,6 +175,7 @@ usage(void)
 
 typedef enum {
     DEMU_SEQ_UNINITIALIZED = 0,
+    DEMU_SEQ_XENSTORE_ATTACHED,
     DEMU_SEQ_XENCTRL_OPEN,
     DEMU_SEQ_XENEVTCHN_OPEN,
     DEMU_SEQ_XENFOREIGNMEMORY_OPEN,
@@ -205,6 +208,7 @@ typedef struct demu_state {
     xenforeignmemory_handle          *xfh;
     xendevicemodel_handle            *xdh;
     domid_t                          domid;
+    domid_t                          be_domid;
     unsigned int                     vcpus;
     ioservid_t                       ioservid;
     xenforeignmemory_resource_handle *resource;
@@ -214,6 +218,7 @@ typedef struct demu_state {
     evtchn_port_t                    buf_ioreq_port;
     evtchn_port_t                    buf_ioreq_local_port;
     demu_space_t                     *memory;
+    struct xs_dev                    *xs_dev;
 } demu_state_t;
 
 static demu_state_t demu_state;
@@ -658,6 +663,12 @@ demu_seq_next(void)
     assert(demu_state.seq < DEMU_SEQ_INITIALIZED);
 
     switch (++demu_state.seq) {
+    case DEMU_SEQ_XENSTORE_ATTACHED:
+        DBG(">XENSTORE_ATTACHED\n");
+        DBG("domid = %u\n", demu_state.domid);
+        DBG("device = %s\n", device_str);
+        break;
+
     case DEMU_SEQ_XENCTRL_OPEN:
         DBG(">XENCTRL_OPEN\n");
         break;
@@ -840,6 +851,14 @@ demu_teardown(void)
 
         xc_interface_close(demu_state.xch);
 
+        demu_state.seq = DEMU_SEQ_XENSTORE_ATTACHED;
+    }
+
+    if (demu_state.seq >= DEMU_SEQ_XENSTORE_ATTACHED) {
+        DBG("<XENSTORE_ATTACHED\n");
+
+        xenstore_disconnect_dom(demu_state.xs_dev);
+
         demu_state.seq = DEMU_SEQ_UNINITIALIZED;
     }
 }
@@ -852,12 +871,13 @@ demu_sigterm(int num)
     DBG("%s\n", strsignal(num));
 
     demu_teardown();
+    xenstore_destroy(demu_state.xs_dev);
 
     exit(0);
 }
 
 static int
-demu_initialize(domid_t domid, char *device_str)
+demu_initialize(void)
 {
     int             rc;
     xc_dominfo_t    dominfo;
@@ -866,7 +886,12 @@ demu_initialize(domid_t domid, char *device_str)
     evtchn_port_t   buf_port;
     int             i;
 
-    demu_state.domid = domid;
+    rc = xenstore_connect_dom(demu_state.xs_dev, demu_state.be_domid,
+            demu_state.domid, NULL, NULL);
+    if (rc < 0)
+        goto fail0;
+
+    demu_seq_next();
 
     demu_state.xch = xc_interface_open(NULL, NULL, 0);
     if (demu_state.xch == NULL)
@@ -900,8 +925,7 @@ demu_initialize(domid_t domid, char *device_str)
 
     DBG("%d vCPU(s)\n", demu_state.vcpus);
 
-    /* XXX: Recognize self domain_id */
-    rc = xc_domain_set_target(demu_state.xch, 1, demu_state.domid);
+    rc = xc_domain_set_target(demu_state.xch, demu_state.be_domid, demu_state.domid);
     if (rc < 0)
         goto fail5;
 
@@ -1026,6 +1050,9 @@ fail2:
 fail1:
     DBG("fail1\n");
 
+fail0:
+    DBG("fail0\n");
+
     warn("fail");
     return -1;
 }
@@ -1142,19 +1169,12 @@ demu_poll_iopages(void)
 int
 main(int argc, char **argv, char **envp)
 {
-    char            *domain_str;
-    char            *device_str;
     int             index;
-    char            *end;
-    domid_t         domid;
     sigset_t        block;
     int             rc;
-    struct pollfd pfd;
+    int             efd, xfd;
 
     prog = basename(argv[0]);
-
-    domain_str = NULL;
-    device_str = NULL;
 
     for (;;) {
         char    c;
@@ -1171,10 +1191,6 @@ main(int argc, char **argv, char **envp)
         DBG("--%s = '%s'\n", demu_option[index].name, optarg);
 
         switch (index) {
-        case DEMU_OPT_DOMAIN:
-            domain_str = optarg;
-            break;
-
         case DEMU_OPT_DEVICE:
             device_str = optarg;
             break;
@@ -1183,17 +1199,6 @@ main(int argc, char **argv, char **envp)
             assert(FALSE);
             break;
         }
-    }
-
-    if (domain_str == NULL) {
-        usage();
-        /*NOTREACHED*/
-    }
-
-    domid = (domid_t)strtol(domain_str, &end, 0);
-    if (*end != '\0') {
-        fprintf(stderr, "invalid domain '%s'\n", domain_str);
-        exit(1);
     }
 
     sigfillset(&block);
@@ -1215,27 +1220,76 @@ main(int argc, char **argv, char **envp)
 
     sigprocmask(SIG_BLOCK, &block, NULL);
 
-    rc = demu_initialize(domid, device_str);
-    if (rc < 0) {
-        demu_teardown();
+    demu_state.xs_dev = xenstore_create(XS_DISK_TYPE);
+    if (demu_state.xs_dev == NULL) {
+        fprintf(stderr, "failed to create xenstore instance\n");
         exit(1);
     }
 
-    pfd.fd = xenevtchn_fd(demu_state.xeh);
-    pfd.events = POLLIN | POLLERR | POLLHUP;
-    pfd.revents = 0;
+    rc = xenstore_get_be_domid(demu_state.xs_dev);
+    if (rc < 0) {
+        xenstore_destroy(demu_state.xs_dev);
+        fprintf(stderr, "failed to read backend domid\n");
+        exit(1);
+    }
+    demu_state.be_domid = rc;
+    DBG("read backend domid %u\n", demu_state.be_domid);
 
-    for (;;) {
-        rc = poll(&pfd, 1, 5000);
+    while (1) {
+        rc = xenstore_wait_fe_domid(demu_state.xs_dev);
+        if (rc < 0) {
+            /*fprintf(stderr, "failed to read frontend domid\n");*/
+            msleep(100);
+            continue;
+        }
+        demu_state.domid = rc;
+        DBG("read frontend domid %u\n", demu_state.domid);
 
-        if (rc > 0 && pfd.revents & POLLIN)
-            demu_poll_iopages();
+        rc = demu_initialize();
+        if (rc < 0) {
+            demu_teardown();
+            continue;
+        }
 
-        if (rc < 0 && errno != EINTR)
-            break;
+        efd = xenevtchn_fd(demu_state.xeh);
+        xfd = xenstore_get_fd(demu_state.xs_dev);
+
+        while (1) {
+            int nfds;
+            fd_set fds;
+            struct timeval t = { .tv_sec = 1 };
+
+            FD_ZERO(&fds);
+            FD_SET(efd, &fds);
+            FD_SET(xfd, &fds);
+            nfds = __max(efd, xfd) + 1;
+
+            rc = select(nfds, &fds, NULL, NULL, &t);
+            if (rc > 0) {
+                if (FD_ISSET(efd, &fds))
+                    demu_poll_iopages();
+
+                if (FD_ISSET(xfd, &fds)) {
+                    rc = xenstore_poll_watches(demu_state.xs_dev);
+                    if (rc < 0) {
+                        DBG("lost connection to dom%d\n", demu_state.domid);
+                        rc = 0;
+                        break;
+                    }
+                }
+            }
+
+            if (rc < 0 && errno != EINTR)
+                break;
+        }
+
+        demu_teardown();
+
+        if (rc < 0)
+           break;
     }
 
-    demu_teardown();
+    xenstore_destroy(demu_state.xs_dev);
 
     return 0;
 }
