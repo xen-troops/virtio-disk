@@ -31,7 +31,8 @@ static u8 virtio_mmio_irq_line = GUEST_VIRTIO_MMIO_SPI;
 
 static int virtio_mmio_get_irq_line(void)
 {
-	return virtio_mmio_irq_line++;
+	/*return virtio_mmio_irq_line++;*/
+	return virtio_mmio_irq_line;
 }
 
 void kvm__irq_trigger(struct kvm *kvm, int irq)
@@ -45,7 +46,7 @@ static u32 virtio_mmio_io_space_blocks = GUEST_VIRTIO_MMIO_BASE;
 static u32 virtio_mmio_get_io_space_block(u32 size)
 {
 	u32 block = virtio_mmio_io_space_blocks;
-	virtio_mmio_io_space_blocks += size;
+	/*virtio_mmio_io_space_blocks += size;*/
 
 	return block;
 }

@@ -222,8 +222,10 @@ fail1:
 
 void device_teardown(void)
 {
-    if (!IS_ERR_OR_NULL(kvm_inst))
+    if (!IS_ERR_OR_NULL(kvm_inst)) {
         kvm_exit(kvm_inst);
+        kvm_inst = NULL;
+    }
 
 #ifdef MAP_IN_ADVANCE
     demu_unmap_whole_guest();
