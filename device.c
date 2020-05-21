@@ -139,8 +139,6 @@ static io_ops_t device_memory_ops = {
 
 static struct kvm *kvm_inst;
 
-#define DEFAULT_DEVICE_STR "/dev/mmcblk1p3"
-
 static struct kvm *kvm_init(char *device_str)
 {
 	struct kvm *kvm = calloc(1, sizeof(*kvm));
@@ -149,10 +147,7 @@ static struct kvm *kvm_init(char *device_str)
 	if (!kvm)
 		return ERR_PTR(-ENOMEM);
 
-	if (device_str)
-		kvm->cfg.disk_image[0].filename = device_str;
-	else
-		kvm->cfg.disk_image[0].filename = DEFAULT_DEVICE_STR;
+	kvm->cfg.disk_image[0].filename = device_str;
 	kvm->cfg.disk_image[0].readonly = 0;
 	kvm->cfg.disk_image[0].direct = 0;
 

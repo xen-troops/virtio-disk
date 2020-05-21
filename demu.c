@@ -857,6 +857,7 @@ demu_teardown(void)
     if (demu_state.seq >= DEMU_SEQ_XENSTORE_ATTACHED) {
         DBG("<XENSTORE_ATTACHED\n");
 
+        free(device_str);
         xenstore_disconnect_dom(demu_state.xs_dev);
 
         demu_state.seq = DEMU_SEQ_UNINITIALIZED;
@@ -876,6 +877,15 @@ demu_sigterm(int num)
     exit(0);
 }
 
+int demu_read_xenstore_config(void *unused)
+{
+    device_str = xenstore_read_fe_str(demu_state.xs_dev, "unique-id");
+    if (!device_str)
+        return -1;
+
+    return 0;
+}
+
 static int
 demu_initialize(void)
 {
@@ -887,7 +897,7 @@ demu_initialize(void)
     int             i;
 
     rc = xenstore_connect_dom(demu_state.xs_dev, demu_state.be_domid,
-            demu_state.domid, NULL, NULL);
+            demu_state.domid, demu_read_xenstore_config, NULL);
     if (rc < 0)
         goto fail0;
 
@@ -1192,7 +1202,7 @@ main(int argc, char **argv, char **envp)
 
         switch (index) {
         case DEMU_OPT_DEVICE:
-            device_str = optarg;
+            /*device_str = optarg;*/
             break;
 
         default:
