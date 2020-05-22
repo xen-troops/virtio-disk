@@ -73,6 +73,8 @@
 
 #define XS_DISK_TYPE	"virtio_disk"
 static char *device_str;
+static int base;
+static int irq;
 
 /*
  * XXX:
@@ -667,6 +669,8 @@ demu_seq_next(void)
         DBG(">XENSTORE_ATTACHED\n");
         DBG("domid = %u\n", demu_state.domid);
         DBG("device = %s\n", device_str);
+        DBG("base = 0x%x\n", base);
+        DBG("irq = %u\n", irq);
         break;
 
     case DEMU_SEQ_XENCTRL_OPEN:
@@ -883,6 +887,12 @@ int demu_read_xenstore_config(void *unused)
     if (!device_str)
         return -1;
 
+    if (xenstore_read_fe_int(demu_state.xs_dev, "base", &base) == -1)
+        return -1;
+
+    if (xenstore_read_fe_int(demu_state.xs_dev, "irq", &irq) == -1)
+        return -1;
+
     return 0;
 }
 
@@ -1010,7 +1020,7 @@ demu_initialize(void)
 
     demu_seq_next();
 
-    rc = device_initialize(device_str);
+    rc = device_initialize(device_str, base, irq);
     if (rc < 0)
         goto fail13;
 

@@ -90,11 +90,6 @@ int demu_register_memory_space(uint64_t start, uint64_t size,
 
 void demu_deregister_memory_space(uint64_t start);
 
-/* XXX: Get values from libxl */
-#define GUEST_VIRTIO_MMIO_BASE	0x02000000
-#define GUEST_VIRTIO_MMIO_SIZE	0x200
-#define GUEST_VIRTIO_MMIO_SPI	33
-
 #endif  /* _DEMU_H */
 
 /*

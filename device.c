@@ -51,6 +51,7 @@
 #include "mapcache.h"
 
 #include "kvm/kvm.h"
+#include "kvm/virtio-mmio.h"
 #include <linux/err.h>
 
 /*
@@ -139,7 +140,7 @@ static io_ops_t device_memory_ops = {
 
 static struct kvm *kvm_inst;
 
-static struct kvm *kvm_init(char *device_str)
+static struct kvm *kvm_init(char *device_str, int base, int irq)
 {
 	struct kvm *kvm = calloc(1, sizeof(*kvm));
 	int rc;
@@ -150,8 +151,8 @@ static struct kvm *kvm_init(char *device_str)
 	kvm->cfg.disk_image[0].filename = device_str;
 	kvm->cfg.disk_image[0].readonly = 0;
 	kvm->cfg.disk_image[0].direct = 0;
-	kvm->cfg.disk_image[0].addr = GUEST_VIRTIO_MMIO_BASE;
-	kvm->cfg.disk_image[0].irq = GUEST_VIRTIO_MMIO_SPI;
+	kvm->cfg.disk_image[0].addr = base;
+	kvm->cfg.disk_image[0].irq = irq;
 
 	kvm->cfg.image_count = 1;
 
@@ -172,7 +173,7 @@ static void kvm_exit(struct kvm *kvm)
 	init_list__exit(kvm);
 }
 
-int device_initialize(char *device_str)
+int device_initialize(char *device_str, int base, int irq)
 {
     int rc;
 
@@ -180,8 +181,8 @@ int device_initialize(char *device_str)
         return -1;
 
     device_memory_state.index = 0;
-    device_memory_state.base = GUEST_VIRTIO_MMIO_BASE;
-    device_memory_state.size = GUEST_VIRTIO_MMIO_SIZE;
+    device_memory_state.base = base;
+    device_memory_state.size = VIRTIO_MMIO_IO_SIZE;
 
     rc = demu_register_memory_space(device_memory_state.base,
                                     device_memory_state.size,
@@ -197,7 +198,7 @@ int device_initialize(char *device_str)
     /*demu_map_whole_guest();*/
 #endif
 
-    kvm_inst = kvm_init(device_str);
+    kvm_inst = kvm_init(device_str, base, irq);
     if (IS_ERR(kvm_inst)) {
         rc = PTR_ERR(kvm_inst);
         goto fail2;
