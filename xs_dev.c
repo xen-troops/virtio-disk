@@ -233,7 +233,13 @@ int xenstore_connect_dom(struct xs_dev *dev, domid_t be_domid, domid_t fe_domid,
     if (dev->connected_cb && dev->connected_cb(dev->data) < 0)
         goto err;
 
-    xenstore_set_be_state(dev, XenbusStateConnected);
+    /*
+     * This is not mandatory as the otherend is not xenbus-aware at all.
+     * Moreover, this might lead to xl create command to fail.
+     * libxl expects backend state to be XenbusStateInitWait at the domain
+     * creation time. So, we cannot switch state to connected here.
+     */
+    /*xenstore_set_be_state(dev, XenbusStateConnected);*/
 
     pr_info("connected to dom%d\n", dev->fe_domid);
 
