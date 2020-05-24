@@ -140,7 +140,7 @@ static io_ops_t device_memory_ops = {
 
 static struct kvm *kvm_inst;
 
-static struct kvm *kvm_init(char *device_str, int base, int irq)
+static struct kvm *kvm_init(char *filename, int readonly, int base, int irq)
 {
 	struct kvm *kvm = calloc(1, sizeof(*kvm));
 	int rc;
@@ -148,8 +148,8 @@ static struct kvm *kvm_init(char *device_str, int base, int irq)
 	if (!kvm)
 		return ERR_PTR(-ENOMEM);
 
-	kvm->cfg.disk_image[0].filename = device_str;
-	kvm->cfg.disk_image[0].readonly = 0;
+	kvm->cfg.disk_image[0].filename = filename;
+	kvm->cfg.disk_image[0].readonly = readonly;
 	kvm->cfg.disk_image[0].direct = 0;
 	kvm->cfg.disk_image[0].addr = base;
 	kvm->cfg.disk_image[0].irq = irq;
@@ -173,7 +173,7 @@ static void kvm_exit(struct kvm *kvm)
 	init_list__exit(kvm);
 }
 
-int device_initialize(char *device_str, int base, int irq)
+int device_initialize(char *filename, int readonly, int base, int irq)
 {
     int rc;
 
@@ -198,7 +198,7 @@ int device_initialize(char *device_str, int base, int irq)
     /*demu_map_whole_guest();*/
 #endif
 
-    kvm_inst = kvm_init(device_str, base, irq);
+    kvm_inst = kvm_init(filename, readonly, base, irq);
     if (IS_ERR(kvm_inst)) {
         rc = PTR_ERR(kvm_inst);
         goto fail2;

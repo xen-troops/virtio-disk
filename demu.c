@@ -72,9 +72,10 @@
 #include "kvm/mutex.h"
 
 #define XS_DISK_TYPE	"virtio_disk"
-static char *device_str;
+static char *filename;
 static int base;
 static int irq;
+static int readonly;
 
 /*
  * XXX:
@@ -668,7 +669,8 @@ demu_seq_next(void)
     case DEMU_SEQ_XENSTORE_ATTACHED:
         DBG(">XENSTORE_ATTACHED\n");
         DBG("domid = %u\n", demu_state.domid);
-        DBG("device = %s\n", device_str);
+        DBG("filename = %s\n", filename);
+        DBG("readonly = %d\n", readonly);
         DBG("base = 0x%x\n", base);
         DBG("irq = %u\n", irq);
         break;
@@ -861,7 +863,7 @@ demu_teardown(void)
     if (demu_state.seq >= DEMU_SEQ_XENSTORE_ATTACHED) {
         DBG("<XENSTORE_ATTACHED\n");
 
-        free(device_str);
+        free(filename);
         xenstore_disconnect_dom(demu_state.xs_dev);
 
         demu_state.seq = DEMU_SEQ_UNINITIALIZED;
@@ -883,14 +885,17 @@ demu_sigterm(int num)
 
 int demu_read_xenstore_config(void *unused)
 {
-    device_str = xenstore_read_fe_str(demu_state.xs_dev, "unique-id");
-    if (!device_str)
+    filename = xenstore_read_fe_str(demu_state.xs_dev, "0/filename");
+    if (!filename)
         return -1;
 
-    if (xenstore_read_fe_int(demu_state.xs_dev, "base", &base) == -1)
+    if (xenstore_read_fe_int(demu_state.xs_dev, "0/readonly", &readonly) == -1)
         return -1;
 
-    if (xenstore_read_fe_int(demu_state.xs_dev, "irq", &irq) == -1)
+    if (xenstore_read_fe_int(demu_state.xs_dev, "0/base", &base) == -1)
+        return -1;
+
+    if (xenstore_read_fe_int(demu_state.xs_dev, "0/irq", &irq) == -1)
         return -1;
 
     return 0;
@@ -1020,7 +1025,7 @@ demu_initialize(void)
 
     demu_seq_next();
 
-    rc = device_initialize(device_str, base, irq);
+    rc = device_initialize(filename, readonly, base, irq);
     if (rc < 0)
         goto fail13;
 
