@@ -33,7 +33,9 @@
 #include <xenctrl.h>
 #include <xendevicemodel.h>
 
-int device_initialize(char *filename, int readonly, int base, int irq);
+struct disk_image_params;
+
+int device_initialize(struct disk_image_params *disk_image, uint8_t image_count);
 void device_teardown(void);
 
 #endif  /* _DEVICE_H */

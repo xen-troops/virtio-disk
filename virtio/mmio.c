@@ -12,8 +12,6 @@
  * XXX:
  * 1. ioeventfd doesn't work without vhost support in kernel.
  * virtio-blk can operate without it, not sure about other virtio backends.
- * 2. Both irq(s) and mmio range(s) should be configurable and come from
- * toolstack.
  */
 
 

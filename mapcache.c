@@ -39,11 +39,6 @@
 
 #include <xenctrl.h>
 
-/*
- * XXX:
- * 1. Access to mapcache must be protected if invalidation is used at runtime.
- */
-
 #include "debug.h"
 #include "demu.h"
 

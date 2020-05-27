@@ -72,18 +72,14 @@
 #include "kvm/mutex.h"
 
 #define XS_DISK_TYPE	"virtio_disk"
-static char *filename;
-static int base;
-static int irq;
-static int readonly;
+
+static struct disk_image_params disk_image[MAX_DISK_IMAGES];
+static u8 image_count;
 
 /*
  * XXX:
  * 1. This file should be refactored heavily.
- * 2. There must be ability to reconnect to the newly created domain.
- * 3. There must be ability to release domain resources if one goes away.
- * 4. Backend should be able to maintain several instances.
- * 5. Sync with recent kvmtool changes.
+ * 2. Sync with recent kvmtool changes.
  */
 
 /*static unsigned long count;*/
@@ -666,14 +662,20 @@ demu_seq_next(void)
     assert(demu_state.seq < DEMU_SEQ_INITIALIZED);
 
     switch (++demu_state.seq) {
-    case DEMU_SEQ_XENSTORE_ATTACHED:
+    case DEMU_SEQ_XENSTORE_ATTACHED: {
+        int i;
+
         DBG(">XENSTORE_ATTACHED\n");
         DBG("domid = %u\n", demu_state.domid);
-        DBG("filename = %s\n", filename);
-        DBG("readonly = %d\n", readonly);
-        DBG("base = 0x%x\n", base);
-        DBG("irq = %u\n", irq);
+
+        for (i = 0; i < image_count; i++) {
+            DBG("filename[%d] = %s\n", i, disk_image[i].filename);
+            DBG("readonly[%d] = %d\n", i, disk_image[i].readonly);
+            DBG("base[%d]     = 0x%x\n", i, disk_image[i].addr);
+            DBG("irq[%d]      = %u\n", i, disk_image[i].irq);
+        }
         break;
+    }
 
     case DEMU_SEQ_XENCTRL_OPEN:
         DBG(">XENCTRL_OPEN\n");
@@ -861,9 +863,17 @@ demu_teardown(void)
     }
 
     if (demu_state.seq >= DEMU_SEQ_XENSTORE_ATTACHED) {
+        int i;
+
         DBG("<XENSTORE_ATTACHED\n");
 
-        free(filename);
+        for (i = 0; i < MAX_DISK_IMAGES; i++) {
+            if (disk_image[i].filename) {
+                free((void *)disk_image[i].filename);
+                disk_image[i].filename = NULL;
+            }
+        }
+
         xenstore_disconnect_dom(demu_state.xs_dev);
 
         demu_state.seq = DEMU_SEQ_UNINITIALIZED;
@@ -883,22 +893,74 @@ demu_sigterm(int num)
     exit(0);
 }
 
-int demu_read_xenstore_config(void *unused)
+static int demu_read_xenstore_config(void *unused)
 {
-    filename = xenstore_read_fe_str(demu_state.xs_dev, "0/filename");
-    if (!filename)
+    char **entries = NULL;
+    unsigned int num, i;
+    int ret = 0;
+
+    entries = xs_directory(demu_state.xs_dev->xsh, XBT_NULL,
+                           demu_state.xs_dev->fe, &num);
+    if (!entries)
         return -1;
 
-    if (xenstore_read_fe_int(demu_state.xs_dev, "0/readonly", &readonly) == -1)
-        return -1;
+    image_count = 0;
+    for (i = 0; i < num; i++) {
+        char *str, *end, node[32];
+        int index, val;
 
-    if (xenstore_read_fe_int(demu_state.xs_dev, "0/base", &base) == -1)
-        return -1;
+        index = strtol(entries[i], &end, 0);
+        if (*end != '\0')
+           continue;
 
-    if (xenstore_read_fe_int(demu_state.xs_dev, "0/irq", &irq) == -1)
-        return -1;
+        if (index >= MAX_DISK_IMAGES || index != image_count) {
+            ret = -1;
+            break;
+        }
 
-    return 0;
+        snprintf(node, sizeof(node), "%d/readonly", index);
+        ret = xenstore_read_fe_int(demu_state.xs_dev, node, &val);
+        if (ret < 0)
+            break;
+        disk_image[image_count].readonly = val;
+
+        snprintf(node, sizeof(node), "%d/base", index);
+        ret = xenstore_read_fe_int(demu_state.xs_dev, node, &val);
+        if (ret < 0)
+            break;
+        disk_image[image_count].addr = val;
+
+        snprintf(node, sizeof(node), "%d/irq", index);
+        ret = xenstore_read_fe_int(demu_state.xs_dev, node, &val);
+        if (ret < 0)
+            break;
+        disk_image[image_count].irq = val;
+
+        snprintf(node, sizeof(node), "%d/filename", index);
+        str = xenstore_read_fe_str(demu_state.xs_dev, node);
+        if (!str) {
+            ret = -1;
+            break;
+        }
+        disk_image[image_count].filename = str;
+
+        image_count ++;
+    }
+
+    free(entries);
+
+    if (!image_count)
+        ret = -1;
+    else if (ret < 0) {
+        for (i = 0; i < image_count; i++) {
+            if (disk_image[i].filename) {
+                free((void *)disk_image[i].filename);
+                disk_image[i].filename = NULL;
+            }
+        }
+    }
+
+    return ret;
 }
 
 static int
@@ -1025,7 +1087,7 @@ demu_initialize(void)
 
     demu_seq_next();
 
-    rc = device_initialize(filename, readonly, base, irq);
+    rc = device_initialize(disk_image, image_count);
     if (rc < 0)
         goto fail13;
 

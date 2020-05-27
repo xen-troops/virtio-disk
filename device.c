@@ -57,7 +57,6 @@
 /*
  * XXX:
  * 1. The initialization of virtio stuff should be refactored.
- * 2. All virtio-blk parameters must be configured.
  */
 
 typedef struct _device_memory_state {
@@ -67,7 +66,7 @@ typedef struct _device_memory_state {
     uint8_t registered;
 } device_memory_state_t;
 
-static device_memory_state_t device_memory_state;
+static device_memory_state_t device_memory_state[MAX_DISK_IMAGES];
 
 static uint8_t device_memory_readb(void *priv, uint64_t addr)
 {
@@ -140,7 +139,7 @@ static io_ops_t device_memory_ops = {
 
 static struct kvm *kvm_inst;
 
-static struct kvm *kvm_init(char *filename, int readonly, int base, int irq)
+static struct kvm *kvm_init(struct disk_image_params *disk_image, u8 image_count)
 {
 	struct kvm *kvm = calloc(1, sizeof(*kvm));
 	int rc;
@@ -148,14 +147,8 @@ static struct kvm *kvm_init(char *filename, int readonly, int base, int irq)
 	if (!kvm)
 		return ERR_PTR(-ENOMEM);
 
-	kvm->cfg.disk_image[0].filename = filename;
-	kvm->cfg.disk_image[0].readonly = readonly;
-	kvm->cfg.disk_image[0].direct = 0;
-	kvm->cfg.disk_image[0].addr = base;
-	kvm->cfg.disk_image[0].irq = irq;
-
-	kvm->cfg.image_count = 1;
-
+	memcpy(kvm->cfg.disk_image, disk_image, sizeof(*disk_image) * image_count);
+	kvm->cfg.image_count = image_count;
 	kvm->nr_disks = kvm->cfg.image_count;
 
 	rc = init_list__init(kvm);
@@ -173,53 +166,58 @@ static void kvm_exit(struct kvm *kvm)
 	init_list__exit(kvm);
 }
 
-int device_initialize(char *filename, int readonly, int base, int irq)
+int device_initialize(struct disk_image_params *disk_image, u8 image_count)
 {
-    int rc;
+    int i, rc;
 
-    if (device_memory_state.registered)
-        return -1;
+    for (i = 0; i < image_count; i++) {
+        if (device_memory_state[i].registered)
+            return -1;
 
-    device_memory_state.index = 0;
-    device_memory_state.base = base;
-    device_memory_state.size = VIRTIO_MMIO_IO_SIZE;
+        device_memory_state[i].index = i;
+        device_memory_state[i].base = disk_image[i].addr;
+        device_memory_state[i].size = VIRTIO_MMIO_IO_SIZE;
 
-    rc = demu_register_memory_space(device_memory_state.base,
-                                    device_memory_state.size,
-                                    &device_memory_ops,
-                                    &device_memory_state);
-    if (rc < 0)
-        goto fail1;
+        rc = demu_register_memory_space(device_memory_state[i].base,
+                                        device_memory_state[i].size,
+                                        &device_memory_ops,
+                                        &device_memory_state[i]);
+        if (rc < 0)
+            goto fail1;
 
-    device_memory_state.registered = 1;
+        device_memory_state[i].registered = 1;
+    }
 
 #ifdef MAP_IN_ADVANCE
     /* either map here or during first demu_get_host_addr request */
     /*demu_map_whole_guest();*/
 #endif
 
-    kvm_inst = kvm_init(filename, readonly, base, irq);
+    kvm_inst = kvm_init(disk_image, image_count);
     if (IS_ERR(kvm_inst)) {
         rc = PTR_ERR(kvm_inst);
-        goto fail2;
+        goto fail1;
     }
 
     return 0;
 
-fail2:
-    DBG("fail2\n");
-
-    demu_deregister_memory_space(device_memory_state.base);
-    device_memory_state.registered = 0;
-
 fail1:
     DBG("fail1\n");
+
+    for (i = 0; i < image_count; i++) {
+        if (device_memory_state[i].registered) {
+            demu_deregister_memory_space(device_memory_state[i].base);
+            device_memory_state[i].registered = 0;
+        }
+    }
 
     return rc;
 }
 
 void device_teardown(void)
 {
+    int i;
+
     if (!IS_ERR_OR_NULL(kvm_inst)) {
         kvm_exit(kvm_inst);
         kvm_inst = NULL;
@@ -231,9 +229,11 @@ void device_teardown(void)
     mapcache_invalidate();
 #endif
 
-    if (device_memory_state.registered) {
-        demu_deregister_memory_space(device_memory_state.base);
-        device_memory_state.registered = 0;
+    for (i = 0; i < MAX_DISK_IMAGES; i++) {
+        if (device_memory_state[i].registered) {
+            demu_deregister_memory_space(device_memory_state[i].base);
+            device_memory_state[i].registered = 0;
+        }
     }
 }
 
