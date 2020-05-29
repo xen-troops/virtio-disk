@@ -188,11 +188,6 @@ int device_initialize(struct disk_image_params *disk_image, u8 image_count)
         device_memory_state[i].registered = 1;
     }
 
-#ifdef MAP_IN_ADVANCE
-    /* either map here or during first demu_get_host_addr request */
-    /*demu_map_whole_guest();*/
-#endif
-
     kvm_inst = kvm_init(disk_image, image_count);
     if (IS_ERR(kvm_inst)) {
         rc = PTR_ERR(kvm_inst);
@@ -223,11 +218,7 @@ void device_teardown(void)
         kvm_inst = NULL;
     }
 
-#ifdef MAP_IN_ADVANCE
-    demu_unmap_whole_guest();
-#else
     mapcache_invalidate();
-#endif
 
     for (i = 0; i < MAX_DISK_IMAGES; i++) {
         if (device_memory_state[i].registered) {
