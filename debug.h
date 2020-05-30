@@ -34,7 +34,7 @@
         fprintf(stderr, "%s: ", __func__);  \
         fprintf(stderr, __VA_ARGS__);       \
         fflush(stderr);                     \
-    } while (FALSE)
+    } while (0)
 
 #endif  /* _DEBUG_H */
 

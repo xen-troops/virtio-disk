@@ -44,9 +44,6 @@
 
 #include "kvm/disk-image.h"
 
-#define FALSE 0
-#define TRUE  1
-
 /*static unsigned long count[MAX_DISK_IMAGES];*/
 
 typedef struct mapcache_entry {
@@ -154,7 +151,7 @@ again:
     ptr = __mapcache_lookup(index, addr >> TARGET_PAGE_SHIFT);
     if (ptr == NULL) {
         if (!faulted) {
-            faulted = TRUE;
+            faulted = 1;
             __mapcache_fault(index, addr >> TARGET_PAGE_SHIFT);
             goto again;
         }

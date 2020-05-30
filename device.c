@@ -68,75 +68,6 @@ typedef struct _device_memory_state {
 
 static device_memory_state_t device_memory_state[MAX_DISK_IMAGES];
 
-static uint8_t device_memory_readb(void *priv, uint64_t addr)
-{
-    device_memory_state_t *state = priv;
-
-    addr -= state->base;
-
-    DBG("%d: offset: 0x%lx\n", state->index, addr);
-
-    return 0;
-}
-
-static void device_memory_writeb(void *priv, uint64_t addr, uint8_t val)
-{
-    device_memory_state_t *state = priv;
-
-    addr -= state->base;
-
-    DBG("%d: offset: 0x%lx val: 0x%x\n", state->index, addr, val);
-}
-
-static uint16_t device_memory_readw(void *priv, uint64_t addr)
-{
-    device_memory_state_t *state = priv;
-
-    addr -= state->base;
-
-    DBG("%d: offset: 0x%lx\n", state->index, addr);
-
-    return 0;
-}
-
-static void device_memory_writew(void *priv, uint64_t addr, uint16_t val)
-{
-    device_memory_state_t *state = priv;
-
-    addr -= state->base;
-
-    DBG("%d: offset: 0x%lx val: 0x%x\n", state->index, addr, val);
-}
-
-static uint32_t device_memory_readl(void *priv, uint64_t addr)
-{
-    device_memory_state_t *state = priv;
-
-    addr -= state->base;
-
-    DBG("%d: offset: 0x%lx\n", state->index, addr);
-
-    return 0;
-}
-
-static void device_memory_writel(void *priv, uint64_t addr, uint32_t val)
-{
-    device_memory_state_t *state = priv;
-
-    addr -= state->base;
-
-    DBG("%d: offset: 0x%lx: val: 0x%x\n", state->index, addr, val);
-}
-
-static io_ops_t device_memory_ops = {
-    .readb = device_memory_readb,
-    .writeb = device_memory_writeb,
-    .readw = device_memory_readw,
-    .writew = device_memory_writew,
-    .readl = device_memory_readl,
-    .writel = device_memory_writel
-};
-
 static struct kvm *kvm_inst;
 
 static struct kvm *kvm_init(struct disk_image_params *disk_image, u8 image_count)
@@ -180,7 +111,7 @@ int device_initialize(struct disk_image_params *disk_image, u8 image_count)
 
         rc = demu_register_memory_space(device_memory_state[i].base,
                                         device_memory_state[i].size,
-                                        &device_memory_ops,
+                                        NULL,
                                         &device_memory_state[i]);
         if (rc < 0)
             goto fail1;

@@ -388,159 +388,29 @@ demu_deregister_memory_space(uint64_t start)
                                                     1, start, end);
 }
 
-#define DEMU_IO_READ(_fn, _priv, _addr, _size, _count, _val)        \
-    do {                                                            \
-        int       		_i = 0;                                     \
-        unsigned int	_shift = 0;                                 \
-                                                                    \
-        (_val) = 0;                                                 \
-        for (_i = 0; _i < (_count); _i++)                           \
-        {                                                           \
-            (_val) |= (uint64_t)(_fn)((_priv), (_addr)) << _shift;  \
-            _shift += 8 * (_size);                                  \
-            (_addr) += (_size);                                     \
-        }                                                           \
-    } while (FALSE)
-
-uint64_t
-demu_io_read(demu_space_t *space, uint64_t addr, uint64_t size)
-{
-    uint64_t    val = ~0ull;
-
-    switch (size) {
-    case 1:
-        val = space->ops->readb(space->priv, addr);
-        break;
-
-    case 2:
-        if (space->ops->readw == NULL)
-            DEMU_IO_READ(space->ops->readb, space->priv, addr, 1, 2, val);
-        else
-            DEMU_IO_READ(space->ops->readw, space->priv, addr, 2, 1, val);
-        break;
-
-    case 4:
-        if (space->ops->readl == NULL) {
-            if (space->ops->readw == NULL)
-                DEMU_IO_READ(space->ops->readb, space->priv, addr, 1, 4,
-                             val);
-            else
-                DEMU_IO_READ(space->ops->readw, space->priv, addr, 2, 2,
-                             val);
-        } else {
-            DEMU_IO_READ(space->ops->readl, space->priv, addr, 4, 1, val);
-        }
-        break;
-
-    case 8:
-        if (space->ops->readl == NULL) {
-            if (space->ops->readw == NULL)
-                DEMU_IO_READ(space->ops->readb, space->priv, addr, 1, 8,
-                             val);
-            else
-                DEMU_IO_READ(space->ops->readw, space->priv, addr, 2, 4,
-                             val);
-        } else {
-            DEMU_IO_READ(space->ops->readl, space->priv, addr, 4, 2, val);
-        }
-        break;
-
-    default:
-        break;
-    }
-
-    return val;
-}
-
-#define DEMU_IO_WRITE(_fn, _priv, _addr, _size, _count, _val)   \
-    do {                                                        \
-        int             _i = 0;                                 \
-        unsigned int    _shift = 0;                             \
-                                                                \
-        for (_i = 0; _i < (_count); _i++)                       \
-        {                                                       \
-            (_fn)((_priv), (_addr), (_val) >> _shift);          \
-            _shift += 8 * (_size);                              \
-            (_addr) += (_size);                                 \
-        }                                                       \
-    } while (FALSE)
-
-void
-demu_io_write(demu_space_t *space, uint64_t addr, uint64_t size,
-              uint64_t val)
-{
-    switch (size) {
-    case 1:
-        space->ops->writeb(space->priv, addr, val);
-        break;
-
-    case 2:
-        if (space->ops->writew == NULL)
-            DEMU_IO_WRITE(space->ops->writeb, space->priv, addr, 1, 2,
-                          val);
-        else
-            DEMU_IO_WRITE(space->ops->writew, space->priv, addr, 2, 1,
-                          val);
-        break;
-
-    case 4:
-        if (space->ops->writel == NULL) {
-            if (space->ops->writew == NULL)
-                DEMU_IO_WRITE(space->ops->writeb, space->priv, addr, 1, 4,
-                              val);
-            else
-                DEMU_IO_WRITE(space->ops->writew, space->priv, addr, 2, 2,
-                              val);
-        } else {
-            DEMU_IO_WRITE(space->ops->writel, space->priv, addr, 4, 1,
-                          val);
-        }
-        break;
-
-    case 8:
-        if (space->ops->writel == NULL) {
-            if (space->ops->writew == NULL)
-                DEMU_IO_WRITE(space->ops->writeb, space->priv, addr, 1, 8,
-                              val);
-            else
-                DEMU_IO_WRITE(space->ops->writew, space->priv, addr, 2, 4,
-                              val);
-        } else {
-            DEMU_IO_WRITE(space->ops->writel, space->priv, addr, 4, 2,
-                          val);
-        }
-        break;
-
-    default:
-        break;
-    }
-}
-
 static void
-demu_handle_io(demu_space_t *space, ioreq_t *ioreq, int is_mmio)
+demu_handle_io(ioreq_t *ioreq)
 {
     uint8_t data[8] = {0};
+    demu_space_t *space;
 
+    space = demu_find_memory_space(ioreq->addr);
     if (space == NULL)
         goto fail1;
 
     if (ioreq->dir == IOREQ_READ) {
         if (!ioreq->data_is_ptr) {
-            /*ioreq->data = demu_io_read(space, ioreq->addr, ioreq->size);*/
-
             kvm__emulate_mmio(NULL, ioreq->addr, data, ioreq->size, 0);
             ioreq->data = *(uint64_t *)&data;
         } else {
-            assert(FALSE);
+            assert(0);
         }
     } else if (ioreq->dir == IOREQ_WRITE) {
         if (!ioreq->data_is_ptr) {
-            /*demu_io_write(space, ioreq->addr, ioreq->size, ioreq->data);*/
-
             *(uint64_t *)&data = ioreq->data;
             kvm__emulate_mmio(NULL, ioreq->addr, data, ioreq->size, 1);
         } else {
-            assert(FALSE);
+            assert(0);
         }
     }
 
@@ -553,12 +423,9 @@ fail1:
 static void
 demu_handle_ioreq(ioreq_t *ioreq)
 {
-    demu_space_t    *space;
-
     switch (ioreq->type) {
     case IOREQ_TYPE_COPY:
-        space = demu_find_memory_space(ioreq->addr);
-        demu_handle_io(space, ioreq, TRUE);
+        demu_handle_io(ioreq);
         break;
 
     case IOREQ_TYPE_INVALIDATE:
@@ -659,7 +526,7 @@ demu_seq_next(void)
         break;
 
     default:
-        assert(FALSE);
+        assert(0);
         break;
     }
 }
@@ -1200,7 +1067,7 @@ main(int argc, char **argv, char **envp)
             break;
 
         default:
-            assert(FALSE);
+            assert(0);
             break;
         }
     }

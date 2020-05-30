@@ -32,14 +32,6 @@
 #ifndef  _DEMU_H
 #define  _DEMU_H
 
-#ifndef TRUE
-#define TRUE    1
-#endif
-
-#ifndef FALSE
-#define FALSE   0
-#endif
-
 void    demu_set_irq(int irq, int level);
 
 #define TARGET_PAGE_SHIFT   12
