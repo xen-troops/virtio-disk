@@ -42,10 +42,12 @@
 #include "debug.h"
 #include "demu.h"
 
+#include "kvm/disk-image.h"
+
 #define FALSE 0
 #define TRUE  1
 
-/*static unsigned long count;*/
+/*static unsigned long count[MAX_DISK_IMAGES];*/
 
 typedef struct mapcache_entry {
     void     *ptr;
@@ -58,13 +60,15 @@ typedef struct mapcache_entry {
 
 #define MAPCACHE_BUCKET_COUNT   32
 
-static mapcache_entry_t mapcache[MAPCACHE_BUCKET_SIZE *
+static mapcache_entry_t mapcache[MAX_DISK_IMAGES][MAPCACHE_BUCKET_SIZE *
                                  MAPCACHE_BUCKET_COUNT];
-static uint64_t mapcache_epoch;
-static int mapcache_empty = 1;
+static uint64_t mapcache_epoch[MAX_DISK_IMAGES];
+static int mapcache_empty[MAX_DISK_IMAGES] = {1};
+
+volatile uint32_t mapcache_inval_cnt = 0;
 
 static inline void *
-__mapcache_lookup(xen_pfn_t pfn)
+__mapcache_lookup(int index, xen_pfn_t pfn)
 {
     int     bucket;
     int     i;
@@ -76,10 +80,10 @@ __mapcache_lookup(xen_pfn_t pfn)
     for (i = 0; i < MAPCACHE_BUCKET_SIZE; i++) {
         mapcache_entry_t *entry;
 
-        entry = &mapcache[(bucket * MAPCACHE_BUCKET_SIZE) + i];
+        entry = &mapcache[index][(bucket * MAPCACHE_BUCKET_SIZE) + i];
 
         if (entry->pfn == pfn) {
-            entry->epoch = mapcache_epoch++;
+            entry->epoch = mapcache_epoch[index]++;
             ptr = entry->ptr;
             break;
         }
@@ -89,7 +93,7 @@ __mapcache_lookup(xen_pfn_t pfn)
 }
 
 static inline void
-__mapcache_fault(xen_pfn_t pfn)
+__mapcache_fault(int index, xen_pfn_t pfn)
 {
     int         bucket;
     int         i;
@@ -99,11 +103,11 @@ __mapcache_fault(xen_pfn_t pfn)
 
     bucket = pfn % MAPCACHE_BUCKET_COUNT;
 
-    oldest_epoch = mapcache_epoch;
+    oldest_epoch = mapcache_epoch[index];
     for (i = 0; i < MAPCACHE_BUCKET_SIZE; i++) {
         mapcache_entry_t *entry;
 
-        entry = &mapcache[(bucket * MAPCACHE_BUCKET_SIZE) + i];
+        entry = &mapcache[index][(bucket * MAPCACHE_BUCKET_SIZE) + i];
 
         if (entry->epoch < oldest_epoch)
             oldest_epoch = entry->epoch;
@@ -112,13 +116,14 @@ __mapcache_fault(xen_pfn_t pfn)
     for (i = 0; i < MAPCACHE_BUCKET_SIZE; i++) {
         mapcache_entry_t *entry;
 
-        entry = &mapcache[(bucket * MAPCACHE_BUCKET_SIZE) + i];
+        entry = &mapcache[index][(bucket * MAPCACHE_BUCKET_SIZE) + i];
 
         if (entry->epoch != oldest_epoch)
             continue;
 
         if (entry->ptr != NULL) {
-            /*DBG("unmap page %"PRIx64": %p (%lu)\n", entry->pfn, entry->ptr, --count);*/
+            /*DBG("unmap page %"PRIx64": %p (%d: %lu)\n", entry->pfn, entry->ptr,
+                index, --count[index]);*/
             demu_unmap_guest_page(entry->ptr);
             entry->ptr = NULL;
         }
@@ -126,34 +131,37 @@ __mapcache_fault(xen_pfn_t pfn)
         entry->ptr = demu_map_guest_page(pfn);
         if (entry->ptr != NULL) {
             entry->pfn = pfn;
-            mapcache_empty = 0;
+            mapcache_empty[index] = 0;
         }
 
-        /*DBG("map page %"PRIx64": %p (%lu)\n", entry->pfn, entry->ptr, ++count);*/
+        /*DBG("map page %"PRIx64": %p (%d: %lu)\n", entry->pfn, entry->ptr,
+            index, ++count[index]);*/
 
         break;
     }
 }
 
 void *
-mapcache_lookup(xen_pfn_t pfn)
+mapcache_lookup(int index, uint64_t addr, uint64_t size)
 {
     void         *ptr;
     int             faulted;
 
+    /*assert((addr & ~TARGET_PAGE_MASK) + size <= TARGET_PAGE_SIZE);*/
+
     faulted = 0;
 again:
-    ptr = __mapcache_lookup(pfn);
+    ptr = __mapcache_lookup(index, addr >> TARGET_PAGE_SHIFT);
     if (ptr == NULL) {
         if (!faulted) {
             faulted = TRUE;
-            __mapcache_fault(pfn);
+            __mapcache_fault(index, addr >> TARGET_PAGE_SHIFT);
             goto again;
         }
         goto fail1;
     }
 
-    return ptr;
+    return ptr + (addr & ~TARGET_PAGE_MASK);
 
 fail1:
     DBG("fail1\n");
@@ -162,20 +170,19 @@ fail1:
 }
 
 void
-mapcache_invalidate(void)
+mapcache_invalidate(int index)
 {
     int i;
 
-    /*DBG("\n");*/
-
-    if (mapcache_empty)
+    if (mapcache_empty[index])
         return;
 
     for (i = 0; i < MAPCACHE_BUCKET_SIZE * MAPCACHE_BUCKET_COUNT; i++) {
-        mapcache_entry_t *entry = &mapcache[i];
+        mapcache_entry_t *entry = &mapcache[index][i];
 
         if (entry->ptr != NULL) {
-            /*DBG("unmap page %"PRIx64": %p (%lu)\n", entry->pfn, entry->ptr, --count);*/
+            /*DBG("unmap page %"PRIx64": %p (%d: %lu)\n", entry->pfn, entry->ptr,
+                index, --count[index]);*/
             demu_unmap_guest_page(entry->ptr);
             entry->ptr = NULL;
             entry->pfn = 0;
@@ -183,8 +190,8 @@ mapcache_invalidate(void)
         }
     }
 
-    mapcache_epoch = 0;
-    mapcache_empty = 1;
+    mapcache_epoch[index] = 0;
+    mapcache_empty[index] = 1;
 }
 
 /*

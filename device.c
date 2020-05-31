@@ -218,9 +218,12 @@ void device_teardown(void)
         kvm_inst = NULL;
     }
 
-    mapcache_invalidate();
-
     for (i = 0; i < MAX_DISK_IMAGES; i++) {
+#ifdef USE_MAPCACHE
+        mapcache_invalidate(i);
+        mapcache_inval_cnt = 0;
+#endif
+
         if (device_memory_state[i].registered) {
             demu_deregister_memory_space(device_memory_state[i].base);
             device_memory_state[i].registered = 0;

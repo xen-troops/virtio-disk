@@ -12,10 +12,6 @@
 
 #include "../demu.h"
 
-/*
- * XXX:
- * 1. Refactor mapping procedure.
- */
 void *guest_flat_to_host(struct kvm *kvm, u64 offset, u32 size)
 {
 	return demu_map_guest_range(offset, size);
@@ -125,9 +121,15 @@ u16 virt_queue__get_head_iov(struct virt_queue *vq, struct iovec iov[], u16 *out
 	do {
 		/* Grab the first descriptor, and check it's OK. */
 		iov[*out + *in].iov_len = virtio_guest_to_host_u32(vq, desc[idx].len);
+#ifdef USE_MAPCACHE
+		/* Do not map all descriptors */
+		iov[*out + *in].iov_base = (void *)virtio_guest_to_host_u64(vq, desc[idx].addr);
+#else
+		/* Map all descriptors */
 		iov[*out + *in].iov_base = guest_flat_to_host(kvm,
 				virtio_guest_to_host_u64(vq, desc[idx].addr),
 				virtio_guest_to_host_u32(vq, desc[idx].len));
+#endif
 		/* If this is an input descriptor, increment that count. */
 		if (virt_desc__test_flag(vq, &desc[idx], VRING_DESC_F_WRITE))
 			(*in)++;

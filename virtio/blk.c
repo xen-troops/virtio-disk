@@ -15,6 +15,7 @@
 #include <pthread.h>
 
 #include "../demu.h"
+#include "../mapcache.h"
 
 #define PCI_DEVICE_ID_VIRTIO_BLK	0x1001
 #define PCI_CLASS_BLK				0x018000
@@ -54,6 +55,9 @@ struct blk_dev {
 	int				io_done;
 
 	struct kvm			*kvm;
+
+	u32	inval_cnt;
+	int	index;
 };
 
 static LIST_HEAD(bdevs);
@@ -80,8 +84,15 @@ void virtio_blk_complete(void *param, long len)
 	if (virtio_queue__should_signal(&bdev->vqs[queueid]))
 		bdev->vdev.ops->signal_vq(req->kvm, &bdev->vdev, queueid);
 
+#ifdef USE_MAPCACHE
+	/* Unmap data descriptors */
+	for (i = 1; i < req->out + req->in - 1; i++)
+		demu_unmap_guest_range(req->iov[i].iov_base, req->iov[i].iov_len);
+#else
+	/* Unmap all descriptors */
 	for (i = 0; i < req->out + req->in; i++)
 		demu_unmap_guest_range(req->iov[i].iov_base, req->iov[i].iov_len);
+#endif
 }
 
 static void virtio_blk_do_io_request(struct kvm *kvm, struct virt_queue *vq, struct blk_dev_req *req)
@@ -93,12 +104,32 @@ static void virtio_blk_do_io_request(struct kvm *kvm, struct virt_queue *vq, str
 	u16 out, in;
 	u32 type;
 	u64 sector;
+#ifdef USE_MAPCACHE
+	u16 last;
+	int i;
+#endif
 
 	block_cnt	= -1;
 	bdev		= req->bdev;
 	iov		= req->iov;
 	out		= req->out;
 	in		= req->in;
+
+#ifdef USE_MAPCACHE
+	/* Cache header descriptor  */
+	iov[0].iov_base = mapcache_lookup(bdev->index,
+			(u64)iov[0].iov_base, iov[0].iov_len);
+
+	/* Cache status descriptor */
+	last = out + in - 1;
+	iov[last].iov_base = mapcache_lookup(bdev->index,
+			(u64)iov[last].iov_base, iov[last].iov_len);
+
+	/* Map data descriptors */
+	for (i = 1; i < last; i++)
+		iov[i].iov_base = demu_map_guest_range((u64)iov[i].iov_base, iov[i].iov_len);
+#endif
+
 	req_hdr		= iov[0].iov_base;
 
 	type = virtio_guest_to_host_u32(vq, req_hdr->type);
@@ -136,7 +167,6 @@ static void virtio_blk_do_io(struct kvm *kvm, struct virt_queue *vq, struct blk_
 	u16 head;
 
 	while (virt_queue__available(vq) && !bdev->io_done) {
-		demu_mapcache_mutex_lock();
 		head		= virt_queue__pop(vq);
 		req		= &bdev->reqs[head];
 		req->head	= virt_queue__get_head_iov(vq, req->iov, &req->out,
@@ -144,7 +174,6 @@ static void virtio_blk_do_io(struct kvm *kvm, struct virt_queue *vq, struct blk_
 		req->vq		= vq;
 
 		virtio_blk_do_io_request(kvm, vq, req);
-		demu_mapcache_mutex_unlock();
 	}
 }
 
@@ -202,6 +231,12 @@ static void *virtio_blk_thread(void *dev)
 		r = read(bdev->io_efd, &data, sizeof(u64));
 		if (r < 0)
 			continue;
+#ifdef USE_MAPCACHE
+		if (mapcache_inval_cnt != bdev->inval_cnt) {
+			mapcache_invalidate(bdev->index);
+			bdev->inval_cnt = mapcache_inval_cnt;
+		}
+#endif
 		virtio_blk_do_io(bdev->kvm, &bdev->vqs[0], bdev);
 	}
 
@@ -327,7 +362,7 @@ static struct virtio_ops blk_dev_virtio_ops = {
 	.set_size_vq		= set_size_vq,
 };
 
-static int virtio_blk__init_one(struct kvm *kvm, struct disk_image *disk)
+static int virtio_blk__init_one(struct kvm *kvm, struct disk_image *disk, int index)
 {
 	struct blk_dev *bdev;
 
@@ -345,6 +380,7 @@ static int virtio_blk__init_one(struct kvm *kvm, struct disk_image *disk)
 			.seg_max	= DISK_SEG_MAX,
 		},
 		.kvm			= kvm,
+		.index			= index,
 	};
 
 	virtio_init(kvm, bdev, &bdev->vdev, &blk_dev_virtio_ops,
@@ -379,7 +415,7 @@ int virtio_blk__init(struct kvm *kvm)
 	for (i = 0; i < kvm->nr_disks; i++) {
 		if (kvm->disks[i]->wwpn)
 			continue;
-		r = virtio_blk__init_one(kvm, kvm->disks[i]);
+		r = virtio_blk__init_one(kvm, kvm->disks[i], i);
 		if (r < 0)
 			goto cleanup;
 	}

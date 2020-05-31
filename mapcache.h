@@ -30,8 +30,10 @@
 #ifndef  _MAPCACHE_H
 #define  _MAPCACHE_H
 
-void *mapcache_lookup(xen_pfn_t pfn);
-void    mapcache_invalidate(void);
+extern volatile uint32_t mapcache_inval_cnt;
+
+void *mapcache_lookup(int index, uint64_t addr, uint64_t size);
+void    mapcache_invalidate(int index);
 
 #endif  /* _MAPCACHE_H */
 

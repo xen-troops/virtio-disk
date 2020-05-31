@@ -69,7 +69,6 @@
 #include "xs_dev.h"
 
 #include "kvm/kvm.h"
-#include "kvm/mutex.h"
 
 #define XS_DISK_TYPE	"virtio_disk"
 
@@ -182,18 +181,6 @@ demu_set_irq(int irq, int level)
                                  irq, level);
 }
 
-static struct mutex mapcache_mutex = MUTEX_INITIALIZER;
-
-void demu_mapcache_mutex_lock(void)
-{
-    mutex_lock(&mapcache_mutex);
-}
-
-void demu_mapcache_mutex_unlock(void)
-{
-    mutex_unlock(&mapcache_mutex);
-}
-
 void *
 demu_map_guest_pages(xen_pfn_t pfn[], int err[], unsigned int n)
 {
@@ -210,24 +197,6 @@ demu_map_guest_range(uint64_t addr, uint64_t size)
     void        *ptr;
 
     /*DBG("%"PRIx64"+%"PRIx64" (%lu)\n", addr, size, ++count);*/
-
-    /*
-     * Insert small descs into mapcache.
-     * XXX We assume the small desc are: header and status.
-     * nothing else (data iovs, desc head) won't be passed into mapcache,
-     * as their size is bigger. This should be rewritten more clearly
-     * probably by inserting the corresponding descs into mapcache when
-     * retrieving them in virt_queue__get_head_iov().
-     */
-    if (size < MAPCACHE_IN_THRESHOLD) {
-        BUG_ON((addr & ~TARGET_PAGE_MASK) + size > TARGET_PAGE_SIZE);
-
-        ptr = mapcache_lookup(addr >> TARGET_PAGE_SHIFT);
-        if (ptr == NULL)
-            return NULL;
-
-        return ptr + (addr & ~TARGET_PAGE_MASK);
-    }
 
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
     n = size >> TARGET_PAGE_SHIFT;
@@ -286,10 +255,6 @@ demu_unmap_guest_range(void *ptr, uint64_t size)
     int n;
 
     /*DBG("%p+%"PRIx64" (%lu)\n", ptr, size, --count);*/
-
-    /* Don't unmap small descs, keep them in mapcache */
-    if (size < MAPCACHE_IN_THRESHOLD)
-        return 0;
 
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
     n = size >> TARGET_PAGE_SHIFT;
@@ -598,9 +563,9 @@ demu_handle_ioreq(ioreq_t *ioreq)
         break;
 
     case IOREQ_TYPE_INVALIDATE:
-        demu_mapcache_mutex_lock();
-        mapcache_invalidate();
-        demu_mapcache_mutex_unlock();
+#ifdef USE_MAPCACHE
+        mapcache_inval_cnt ++;
+#endif
         break;
 
     default:
