@@ -69,16 +69,13 @@ __mapcache_lookup(int index, xen_pfn_t pfn)
 {
     int     bucket;
     int     i;
-    void *ptr;
+    void *ptr = NULL;
+    mapcache_entry_t *entry;
 
     bucket = pfn % MAPCACHE_BUCKET_COUNT;
 
-    ptr = NULL;
-    for (i = 0; i < MAPCACHE_BUCKET_SIZE; i++) {
-        mapcache_entry_t *entry;
-
-        entry = &mapcache[index][(bucket * MAPCACHE_BUCKET_SIZE) + i];
-
+    entry = &mapcache[index][(bucket * MAPCACHE_BUCKET_SIZE)];
+    for (i = 0; i < MAPCACHE_BUCKET_SIZE; i++, entry++) {
         if (entry->pfn == pfn) {
             entry->epoch = mapcache_epoch[index]++;
             ptr = entry->ptr;
@@ -95,26 +92,22 @@ __mapcache_fault(int index, xen_pfn_t pfn)
     int         bucket;
     int         i;
     uint64_t    oldest_epoch;
+    mapcache_entry_t *entry;
 
     /*DBG("%"PRIx64"\n", pfn);*/
 
     bucket = pfn % MAPCACHE_BUCKET_COUNT;
 
     oldest_epoch = mapcache_epoch[index];
-    for (i = 0; i < MAPCACHE_BUCKET_SIZE; i++) {
-        mapcache_entry_t *entry;
 
-        entry = &mapcache[index][(bucket * MAPCACHE_BUCKET_SIZE) + i];
-
+    entry = &mapcache[index][(bucket * MAPCACHE_BUCKET_SIZE)];
+    for (i = 0; i < MAPCACHE_BUCKET_SIZE; i++, entry++) {
         if (entry->epoch < oldest_epoch)
             oldest_epoch = entry->epoch;
     }
 
-    for (i = 0; i < MAPCACHE_BUCKET_SIZE; i++) {
-        mapcache_entry_t *entry;
-
-        entry = &mapcache[index][(bucket * MAPCACHE_BUCKET_SIZE) + i];
-
+    entry = &mapcache[index][(bucket * MAPCACHE_BUCKET_SIZE)];
+    for (i = 0; i < MAPCACHE_BUCKET_SIZE; i++, entry++) {
         if (entry->epoch != oldest_epoch)
             continue;
 
