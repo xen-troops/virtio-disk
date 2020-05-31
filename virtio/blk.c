@@ -51,6 +51,7 @@ struct blk_dev {
 
 	pthread_t			io_thread;
 	int				io_efd;
+	int				io_done;
 
 	struct kvm			*kvm;
 };
@@ -134,7 +135,7 @@ static void virtio_blk_do_io(struct kvm *kvm, struct virt_queue *vq, struct blk_
 	struct blk_dev_req *req;
 	u16 head;
 
-	while (virt_queue__available(vq)) {
+	while (virt_queue__available(vq) && !bdev->io_done) {
 		demu_mapcache_mutex_lock();
 		head		= virt_queue__pop(vq);
 		req		= &bdev->reqs[head];
@@ -197,7 +198,7 @@ static void *virtio_blk_thread(void *dev)
 
 	kvm__set_thread_name("virtio-blk-io");
 
-	while (1) {
+	while (!bdev->io_done) {
 		r = read(bdev->io_efd, &data, sizeof(u64));
 		if (r < 0)
 			continue;
@@ -246,11 +247,14 @@ static int init_vq(struct kvm *kvm, void *dev, u32 vq, u32 page_size, u32 align,
 	if (bdev->io_efd < 0)
 		return -errno;
 
+	bdev->io_done = 0;
 	if (pthread_create(&bdev->io_thread, NULL, virtio_blk_thread, bdev))
 		return -errno;
 
 	return 0;
 }
+
+static int notify_vq(struct kvm *kvm, void *dev, u32 vq);
 
 static void exit_vq(struct kvm *kvm, void *dev, u32 vq)
 {
@@ -260,9 +264,10 @@ static void exit_vq(struct kvm *kvm, void *dev, u32 vq)
 	if (vq != 0)
 		return;
 
-	close(bdev->io_efd);
-	pthread_cancel(bdev->io_thread);
+	bdev->io_done = 1;
+	notify_vq(kvm, dev, vq);
 	pthread_join(bdev->io_thread, NULL);
+	close(bdev->io_efd);
 
 	disk_image__wait(bdev->disk);
 
