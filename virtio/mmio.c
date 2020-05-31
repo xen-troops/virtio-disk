@@ -309,8 +309,8 @@ int virtio_mmio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 	vmmio->kvm	= kvm;
 	vmmio->dev	= dev;
 
-	r = kvm__register_mmio(kvm, vmmio->addr, VIRTIO_MMIO_IO_SIZE,
-			       false, virtio_mmio_mmio_callback, vdev);
+	r = demu_register_memory_space(vmmio->addr, VIRTIO_MMIO_IO_SIZE,
+			virtio_mmio_mmio_callback, vdev);
 	if (r < 0)
 		return r;
 
@@ -332,7 +332,7 @@ int virtio_mmio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 
 	r = device__register(&vmmio->dev_hdr);
 	if (r < 0) {
-		kvm__deregister_mmio(kvm, vmmio->addr);
+		demu_deregister_memory_space(vmmio->addr);
 		return r;
 	}
 #endif
@@ -365,7 +365,7 @@ int virtio_mmio_exit(struct kvm *kvm, struct virtio_device *vdev)
 	struct virtio_mmio *vmmio = vdev->virtio;
 
 	virtio_mmio_reset(kvm, vdev);
-	kvm__deregister_mmio(kvm, vmmio->addr);
+	demu_deregister_memory_space(vmmio->addr);
 
 	return 0;
 }

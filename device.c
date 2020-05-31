@@ -59,15 +59,6 @@
  * 1. The initialization of virtio stuff should be refactored.
  */
 
-typedef struct _device_memory_state {
-    unsigned int index;
-    uint64_t base;
-    uint64_t size;
-    uint8_t registered;
-} device_memory_state_t;
-
-static device_memory_state_t device_memory_state[MAX_DISK_IMAGES];
-
 static struct kvm *kvm_inst;
 
 static struct kvm *kvm_init(struct disk_image_params *disk_image, u8 image_count)
@@ -99,67 +90,26 @@ static void kvm_exit(struct kvm *kvm)
 
 int device_initialize(struct disk_image_params *disk_image, u8 image_count)
 {
-    int i, rc;
-
-    for (i = 0; i < image_count; i++) {
-        if (device_memory_state[i].registered)
-            return -1;
-
-        device_memory_state[i].index = i;
-        device_memory_state[i].base = disk_image[i].addr;
-        device_memory_state[i].size = VIRTIO_MMIO_IO_SIZE;
-
-        rc = demu_register_memory_space(device_memory_state[i].base,
-                                        device_memory_state[i].size,
-                                        NULL,
-                                        &device_memory_state[i]);
-        if (rc < 0)
-            goto fail1;
-
-        device_memory_state[i].registered = 1;
-    }
-
     kvm_inst = kvm_init(disk_image, image_count);
-    if (IS_ERR(kvm_inst)) {
-        rc = PTR_ERR(kvm_inst);
-        goto fail1;
-    }
+    if (IS_ERR(kvm_inst))
+        return PTR_ERR(kvm_inst);
 
     return 0;
-
-fail1:
-    DBG("fail1\n");
-
-    for (i = 0; i < image_count; i++) {
-        if (device_memory_state[i].registered) {
-            demu_deregister_memory_space(device_memory_state[i].base);
-            device_memory_state[i].registered = 0;
-        }
-    }
-
-    return rc;
 }
 
 void device_teardown(void)
 {
-    int i;
-
     if (!IS_ERR_OR_NULL(kvm_inst)) {
         kvm_exit(kvm_inst);
+        free(kvm_inst);
         kvm_inst = NULL;
     }
 
-    for (i = 0; i < MAX_DISK_IMAGES; i++) {
 #ifdef USE_MAPCACHE
+    for (int i = 0; i < MAX_DISK_IMAGES; i++)
         mapcache_invalidate(i);
-        mapcache_inval_cnt = 0;
+    mapcache_inval_cnt = 0;
 #endif
-
-        if (device_memory_state[i].registered) {
-            demu_deregister_memory_space(device_memory_state[i].base);
-            device_memory_state[i].registered = 0;
-        }
-    }
 }
 
 /*

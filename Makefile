@@ -11,7 +11,6 @@ OBJS :=	device.o \
 OBJS	+= virtio/blk.o
 OBJS	+= virtio/core.o
 OBJS	+= virtio/mmio.o
-OBJS	+= mmio.o
 
 OBJS	+= disk/core.o
 OBJS	+= disk/blk.o
@@ -21,7 +20,6 @@ OBJS	+= disk/qcow.o
 
 OBJS	+= util/init.o
 OBJS	+= util/rbtree.o
-OBJS	+= util/rbtree-interval.o
 OBJS	+= util/read-write.o
 OBJS	+= util/util.o
 

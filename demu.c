@@ -112,8 +112,8 @@ struct demu_space {
     demu_space_t	*next;
     uint64_t		start;
     uint64_t		end;
-    const io_ops_t	*ops;
-    void		    *priv;
+    void			(*mmio_fn)(u64 addr, u8 *data, u32 len, u8 is_write, void *ptr);
+    void			*ptr;
 };
 
 typedef struct demu_state {
@@ -255,9 +255,12 @@ demu_find_memory_space(uint64_t addr)
 
 static int
 demu_register_space(demu_space_t **headp, uint64_t start, uint64_t end,
-                    const io_ops_t *ops, void *priv)
+    void (*mmio_fn)(u64 addr, u8 *data, u32 len, u8 is_write, void *ptr),
+    void *ptr)
 {
     demu_space_t    *space;
+
+    assert(mmio_fn);
 
     if (demu_find_space(*headp, start) || demu_find_space(*headp, end))
         goto fail1;
@@ -268,8 +271,8 @@ demu_register_space(demu_space_t **headp, uint64_t start, uint64_t end,
 
     space->start = start;
     space->end = end;
-    space->ops = ops;
-    space->priv = priv;
+    space->mmio_fn = mmio_fn;
+    space->ptr = ptr;
 
     space->next = *headp;
     *headp = space;
@@ -306,13 +309,14 @@ demu_deregister_space(demu_space_t **headp, uint64_t start, uint64_t *end)
 
 int
 demu_register_memory_space(uint64_t start, uint64_t size,
-                           const io_ops_t *ops, void *priv)
+    void (*mmio_fn)(u64 addr, u8 *data, u32 len, u8 is_write, void *ptr),
+    void *ptr)
 {
     int rc;
 
     DBG("%"PRIx64" - %"PRIx64"\n", start, start + size - 1);
 
-    rc = demu_register_space(&demu_state.memory, start, start + size - 1, ops, priv);
+    rc = demu_register_space(&demu_state.memory, start, start + size - 1, mmio_fn, ptr);
     if (rc < 0)
         goto fail1;
 
@@ -360,29 +364,25 @@ demu_handle_io(ioreq_t *ioreq)
     demu_space_t *space;
 
     space = demu_find_memory_space(ioreq->addr);
-    if (space == NULL)
-        goto fail1;
+    if (space == NULL) {
+        fprintf(stderr, "Ignoring MMIO %s at 0x%lx (size %u)\n",
+            ioreq->dir == IOREQ_READ ? "read" : "write", ioreq->addr, ioreq->size);
+        return;
+    }
 
     if (ioreq->dir == IOREQ_READ) {
         if (!ioreq->data_is_ptr) {
-            kvm__emulate_mmio(ioreq->addr, data, ioreq->size, 0);
+            space->mmio_fn(ioreq->addr, data, ioreq->size, 0, space->ptr);
             ioreq->data = *(uint64_t *)&data;
-        } else {
+        } else
             assert(0);
-        }
     } else if (ioreq->dir == IOREQ_WRITE) {
         if (!ioreq->data_is_ptr) {
             *(uint64_t *)&data = ioreq->data;
-            kvm__emulate_mmio(ioreq->addr, data, ioreq->size, 1);
-        } else {
+            space->mmio_fn(ioreq->addr, data, ioreq->size, 1, space->ptr);
+        } else
             assert(0);
-        }
     }
-
-    return;
-
-fail1:
-    DBG("fail1\n");
 }
 
 static void

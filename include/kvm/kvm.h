@@ -35,11 +35,6 @@ struct kvm {
 };
 
 void kvm__irq_trigger(struct kvm *kvm, int irq);
-bool kvm__emulate_mmio(u64 phys_addr, u8 *data, u32 len, u8 is_write);
-int kvm__register_mmio(struct kvm *kvm, u64 phys_addr, u64 phys_addr_len, bool coalesce,
-		       void (*mmio_fn)(u64 addr, u8 *data, u32 len, u8 is_write, void *ptr),
-			void *ptr);
-bool kvm__deregister_mmio(struct kvm *kvm, u64 phys_addr);
 
 void *guest_flat_to_host(struct kvm *kvm, u64 offset, u32 size);
 

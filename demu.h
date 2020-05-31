@@ -28,6 +28,7 @@
  */
 
 #include <xenctrl.h>
+#include <linux/types.h>
 
 #ifndef  _DEMU_H
 #define  _DEMU_H
@@ -57,18 +58,9 @@ static inline void demu_unmap_guest_page(void *ptr)
 void    *demu_map_guest_range(uint64_t addr, uint64_t size);
 int     demu_unmap_guest_range(void *ptr, uint64_t size);
 
-typedef struct io_ops {
-        uint8_t         (*readb)(void *priv, uint64_t addr);
-        uint16_t        (*readw)(void *priv, uint64_t addr);
-        uint32_t        (*readl)(void *priv, uint64_t addr);
-        void            (*writeb)(void *priv, uint64_t addr, uint8_t val);
-        void            (*writew)(void *priv, uint64_t addr, uint16_t val);
-        void            (*writel)(void *priv, uint64_t addr, uint32_t val);
-} io_ops_t;
-
-
 int demu_register_memory_space(uint64_t start, uint64_t size,
-                               const io_ops_t *ops, void *priv);
+    void (*mmio_fn)(u64 addr, u8 *data, u32 len, u8 is_write, void *ptr),
+    void *ptr);
 
 void demu_deregister_memory_space(uint64_t start);
 
