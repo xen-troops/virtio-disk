@@ -279,6 +279,7 @@ int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		int device_id, int subsys_id, int class, u32 addr, u8 irq)
 {
 	void *virtio;
+	int r;
 
 	switch (trans) {
 #if 0
@@ -293,7 +294,7 @@ int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		vdev->ops->init			= virtio_pci__init;
 		vdev->ops->exit			= virtio_pci__exit;
 		vdev->ops->reset		= virtio_pci__reset;
-		vdev->ops->init(kvm, dev, vdev, device_id, subsys_id, class);
+		r = vdev->ops->init(kvm, dev, vdev, device_id, subsys_id, class);
 		break;
 #endif
 	case VIRTIO_MMIO:
@@ -307,13 +308,13 @@ int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		vdev->ops->init			= virtio_mmio_init;
 		vdev->ops->exit			= virtio_mmio_exit;
 		vdev->ops->reset		= virtio_mmio_reset;
-		vdev->ops->init(kvm, dev, vdev, device_id, subsys_id, class, addr, irq);
+		r = vdev->ops->init(kvm, dev, vdev, device_id, subsys_id, class, addr, irq);
 		break;
 	default:
-		return -1;
+		r = -1;
 	};
 
-	return 0;
+	return r;
 }
 
 #if 0

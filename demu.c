@@ -78,7 +78,6 @@ static u8 image_count;
 /*
  * XXX:
  * 1. This file should be refactored heavily.
- * 2. Sync with recent kvmtool changes.
  */
 
 /*static unsigned long count;*/

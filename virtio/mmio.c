@@ -296,27 +296,23 @@ static void generate_virtio_mmio_fdt_node(void *fdt,
 	die("Unable to generate device tree nodes without libfdt\n");
 }
 #endif
-
-void virtio_mmio_assign_irq(struct device_header *dev_hdr)
-{
-	struct virtio_mmio *vmmio = container_of(dev_hdr,
-						 struct virtio_mmio,
-						 dev_hdr);
-	vmmio->irq = irq__alloc_line();
-}
 #endif
 
 int virtio_mmio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		     int device_id, int subsys_id, int class, u32 addr, u8 irq)
 {
 	struct virtio_mmio *vmmio = vdev->virtio;
+	int r;
 
 	vmmio->addr	= addr;
+	vmmio->irq	= irq;
 	vmmio->kvm	= kvm;
 	vmmio->dev	= dev;
 
-	kvm__register_mmio(kvm, vmmio->addr, VIRTIO_MMIO_IO_SIZE,
-			   false, virtio_mmio_mmio_callback, vdev);
+	r = kvm__register_mmio(kvm, vmmio->addr, VIRTIO_MMIO_IO_SIZE,
+			       false, virtio_mmio_mmio_callback, vdev);
+	if (r < 0)
+		return r;
 
 	vmmio->hdr = (struct virtio_mmio_hdr) {
 		.magic		= {'v', 'i', 'r', 't'},
@@ -332,10 +328,14 @@ int virtio_mmio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		.data		= generate_virtio_mmio_fdt_node,
 	};
 
-	device__register(&vmmio->dev_hdr);
-#endif
+	vmmio->irq = irq__alloc_line();
 
-	vmmio->irq = irq;
+	r = device__register(&vmmio->dev_hdr);
+	if (r < 0) {
+		kvm__deregister_mmio(kvm, vmmio->addr);
+		return r;
+	}
+#endif
 
 	/*
 	 * Instantiate guest virtio-mmio devices using kernel command line
