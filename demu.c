@@ -400,7 +400,7 @@ demu_handle_io(ioreq_t *ioreq)
 
     if (ioreq->dir == IOREQ_READ) {
         if (!ioreq->data_is_ptr) {
-            kvm__emulate_mmio(NULL, ioreq->addr, data, ioreq->size, 0);
+            kvm__emulate_mmio(ioreq->addr, data, ioreq->size, 0);
             ioreq->data = *(uint64_t *)&data;
         } else {
             assert(0);
@@ -408,7 +408,7 @@ demu_handle_io(ioreq_t *ioreq)
     } else if (ioreq->dir == IOREQ_WRITE) {
         if (!ioreq->data_is_ptr) {
             *(uint64_t *)&data = ioreq->data;
-            kvm__emulate_mmio(NULL, ioreq->addr, data, ioreq->size, 1);
+            kvm__emulate_mmio(ioreq->addr, data, ioreq->size, 1);
         } else {
             assert(0);
         }

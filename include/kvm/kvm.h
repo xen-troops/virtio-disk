@@ -14,7 +14,7 @@
 /*
  * XXX:
  * 1. This should be completely refactored including corresponding sources,
- * there must be no kvm, kvm_cpu, etc prefixes. Disk related stuff should
+ * there must be no kvm, etc prefixes. Disk related stuff should
  * be moved to proper place.
  */
 
@@ -28,24 +28,16 @@ struct kvm_config {
 	int debug_iodelay;
 };
 
-struct kvm_cpu {
-	int dummy;
-};
-
 struct kvm {
 	struct kvm_config	cfg;
 	struct disk_image       **disks;
 	int                     nr_disks;
-
-#ifdef KVM_BRLOCK_DEBUG
-	pthread_rwlock_t	brlock_sem;
-#endif
 };
 
 void kvm__irq_trigger(struct kvm *kvm, int irq);
-bool kvm__emulate_mmio(struct kvm_cpu *vcpu, u64 phys_addr, u8 *data, u32 len, u8 is_write);
+bool kvm__emulate_mmio(u64 phys_addr, u8 *data, u32 len, u8 is_write);
 int kvm__register_mmio(struct kvm *kvm, u64 phys_addr, u64 phys_addr_len, bool coalesce,
-		       void (*mmio_fn)(struct kvm_cpu *vcpu, u64 addr, u8 *data, u32 len, u8 is_write, void *ptr),
+		       void (*mmio_fn)(u64 addr, u8 *data, u32 len, u8 is_write, void *ptr),
 			void *ptr);
 bool kvm__deregister_mmio(struct kvm *kvm, u64 phys_addr);
 
