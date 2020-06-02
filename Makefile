@@ -23,15 +23,15 @@ OBJS	+= util/rbtree-interval.o
 OBJS	+= util/read-write.o
 OBJS	+= util/util.o
 
-CC  := $(CROSS_COMPILE)gcc
-LD  := $(CROSS_COMPILE)ld
+#CC  := $(CROSS_COMPILE)gcc
+#LD  := $(CROSS_COMPILE)ld
 
 CFLAGS  = -I$(shell pwd)/include
 
 # _GNU_SOURCE for asprintf.
 CFLAGS += -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_GNU_SOURCE -DUSE_MAPCACHE # -DCONFIG_HAS_AIO
 
-CFLAGS += -Wall -Werror -g -O1 -fsigned-char
+CFLAGS += -Wall -Werror -g -O1
 
 ifeq ($(shell uname),Linux)
 LDLIBS := -lutil -lrt
@@ -46,7 +46,7 @@ CFLAGS   += -Wp,-MD,$(@D)/.$(@F).d
 SUBDIRS  = $(filter-out ./,$(dir $(OBJS) $(LIBS)))
 DEPS     = .*.d
 
-LDFLAGS := -g 
+LDFLAGS += -g
 
 all: $(TARGET)
 
@@ -59,7 +59,7 @@ $(TARGET): $(LIBS) $(OBJS)
 .PHONY: ALWAYS
 
 clean:
-	$(foreach dir,$(SUBDIRS),make -C $(dir) clean)
+#	$(foreach dir,$(SUBDIRS),make -C $(dir) clean)
 	rm -f $(OBJS)
 	rm -f $(DEPS)
 	rm -f $(TARGET)
