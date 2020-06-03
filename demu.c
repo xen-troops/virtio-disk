@@ -89,40 +89,6 @@ bool do_debug_print = true;
 #define mb() asm volatile ("" : : : "memory")
 #define __max(_x, _y) (((_x) > (_y)) ? (_x) : (_y))
 
-enum {
-    DEMU_OPT_DEVICE,
-    DEMU_NR_OPTS
-    };
-
-static struct option demu_option[] = {
-    {"device", 1, NULL, 0},
-    {NULL, 0, NULL, 0}
-};
-
-static const char *demu_option_text[] = {
-    "<device>",
-    NULL
-};
-
-static const char *prog;
-
-static void
-usage(void)
-{
-    int i;
-
-    fprintf(stderr, "Usage: %s <options>\n\n", prog);
-
-    for (i = 0; i < DEMU_NR_OPTS; i++)
-        fprintf(stderr, "\t--%s %s\n",
-                demu_option[i].name,
-                demu_option_text[i]);
-
-    fprintf(stderr, "\n");
-
-    exit(2);
-}
-
 typedef enum {
     DEMU_SEQ_UNINITIALIZED = 0,
     DEMU_SEQ_XENSTORE_ATTACHED,
@@ -1040,37 +1006,9 @@ demu_poll_iopages(void)
 int
 main(int argc, char **argv, char **envp)
 {
-    int             index;
     sigset_t        block;
     int             rc;
     int             efd, xfd;
-
-    prog = basename(argv[0]);
-
-    for (;;) {
-        char    c;
-
-        c = getopt_long(argc, argv, "", demu_option, &index);
-        if (c == -1)
-            break;
-
-        if (c != 0) {
-            usage();
-            /*NOTREACHED*/
-        }
-
-        DBG("--%s = '%s'\n", demu_option[index].name, optarg);
-
-        switch (index) {
-        case DEMU_OPT_DEVICE:
-            /*device_str = optarg;*/
-            break;
-
-        default:
-            assert(0);
-            break;
-        }
-    }
 
     sigfillset(&block);
 
