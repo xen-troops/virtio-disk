@@ -4,7 +4,6 @@
 #include <sys/uio.h>
 #include <stdlib.h>
 
-#include "kvm/barrier.h"
 #include "kvm/virtio.h"
 #include "kvm/virtio-mmio.h"
 #include "kvm/util.h"
@@ -35,7 +34,7 @@ void virt_queue__used_idx_advance(struct virt_queue *queue, u16 jump)
 	 * We need a wmb here since we can't advance idx unless we're ready
 	 * to pass the used element to the guest.
 	 */
-	wmb();
+	xen_wmb();
 	idx += jump;
 	queue->vring.used->idx = virtio_host_to_guest_u16(queue, idx);
 
@@ -44,7 +43,7 @@ void virt_queue__used_idx_advance(struct virt_queue *queue, u16 jump)
 	 * Without a wmb here the guest may ignore the queue since it won't see
 	 * an updated idx.
 	 */
-	wmb();
+	xen_wmb();
 }
 
 struct vring_used_elem *

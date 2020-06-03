@@ -86,7 +86,6 @@ bool do_debug_print = true;
 
 #define MAPCACHE_IN_THRESHOLD	0x30
 
-#define mb() asm volatile ("" : : : "memory")
 #define __max(_x, _y) (((_x) > (_y)) ? (_x) : (_y))
 
 typedef enum {
@@ -906,7 +905,7 @@ demu_poll_buffered_iopage(void)
         
         read_pointer = demu_state.buffered_iopage->read_pointer;
         write_pointer = demu_state.buffered_iopage->write_pointer;
-        mb();
+        xen_mb();
 
         if (read_pointer == write_pointer)
             break;
@@ -942,11 +941,11 @@ demu_poll_buffered_iopage(void)
             }
 
             demu_handle_ioreq(&ioreq);
-            mb();
+            xen_mb();
         }
 
         demu_state.buffered_iopage->read_pointer = read_pointer;
-        mb();
+        xen_mb();
     }
 }
 
@@ -964,15 +963,15 @@ demu_poll_shared_iopage(unsigned int i)
         return;
     }
 
-    mb();
+    xen_mb();
 
     ioreq->state = STATE_IOREQ_INPROCESS;
 
     demu_handle_ioreq(ioreq);
-    mb();
+    xen_mb();
 
     ioreq->state = STATE_IORESP_READY;
-    mb();
+    xen_mb();
 
     xenevtchn_notify(demu_state.xeh, demu_state.ioreq_local_port[i]);
 }

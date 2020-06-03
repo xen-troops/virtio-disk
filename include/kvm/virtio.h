@@ -9,8 +9,8 @@
 #include <linux/types.h>
 #include <linux/virtio_config.h>
 #include <sys/uio.h>
+#include <xenctrl.h>
 
-#include "kvm/barrier.h"
 #include "kvm/kvm.h"
 
 #define VIRTIO_IRQ_LOW		0
@@ -122,7 +122,7 @@ static inline u16 virt_queue__pop(struct virt_queue *queue)
 	 * Ensure that we read the updated entry once virt_queue__available()
 	 * observes the new index.
 	 */
-	rmb();
+	xen_rmb();
 
 	guest_idx = queue->vring.avail->ring[queue->last_avail_idx++ % queue->vring.num];
 	return virtio_guest_to_host_u16(queue, guest_idx);
@@ -147,7 +147,7 @@ static inline bool virt_queue__available(struct virt_queue *vq)
 		 * index to see if we need any notification. Ensure that it
 		 * reads the updated index, or else we'll miss the notification.
 		 */
-		mb();
+		xen_mb();
 	}
 
 	return vq->vring.avail->idx != last_avail_idx;
