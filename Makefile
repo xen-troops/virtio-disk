@@ -1,4 +1,6 @@
-TARGET = demu
+TARGET = virtio-disk
+INSTALL = install
+PREFIX=/usr/bin
 
 OBJS :=	device.o \
 	mapcache.o \
@@ -63,6 +65,11 @@ clean:
 	rm -f $(OBJS)
 	rm -f $(DEPS)
 	rm -f $(TARGET)
+
+.PHONY: install
+install: $(TARGET)
+	$(INSTALL) -d $(DESTDIR)$(PREFIX)
+	$(INSTALL) -m 755 $(TARGET) $(DESTDIR)$(PREFIX)/$(TARGET)
 
 -include $(DEPS)
 
