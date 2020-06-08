@@ -61,9 +61,6 @@ struct blk_dev {
 };
 
 static LIST_HEAD(bdevs);
-#if 0
-static int compat_id = -1;
-#endif
 
 void virtio_blk_complete(void *param, long len)
 {
@@ -252,10 +249,6 @@ static int init_vq(struct kvm *kvm, void *dev, u32 vq, u32 page_size, u32 align,
 	struct virt_queue *queue;
 	void *p;
 
-#if 0
-	compat__remove_message(compat_id);
-#endif
-
 	BUG_ON(align != PAGE_SIZE);
 	BUG_ON(page_size != PAGE_SIZE);
 
@@ -396,11 +389,6 @@ static int virtio_blk__init_one(struct kvm *kvm, struct disk_image *disk, int in
 		return r;
 
 	disk_image__set_callback(bdev->disk, virtio_blk_complete);
-
-#if 0
-	if (compat_id == -1)
-		compat_id = virtio_compat_add_message("virtio-blk", "CONFIG_VIRTIO_BLK");
-#endif
 
 	return 0;
 }

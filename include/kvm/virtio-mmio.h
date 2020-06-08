@@ -51,7 +51,6 @@ struct virtio_mmio {
 	u8			irq;
 	struct virtio_mmio_hdr	hdr;
 #if 0
-	struct device_header	dev_hdr;
 	struct virtio_mmio_ioevent_param ioeventfds[VIRTIO_MMIO_MAX_VQ];
 #endif
 };

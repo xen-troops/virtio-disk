@@ -258,46 +258,6 @@ static void virtio_mmio_mmio_callback(
 		virtio_mmio_config_in(offset, data, len, ptr);
 }
 
-#if 0
-#ifdef CONFIG_HAS_LIBFDT
-#define DEVICE_NAME_MAX_LEN 32
-static
-void generate_virtio_mmio_fdt_node(void *fdt,
-				   struct device_header *dev_hdr,
-				   void (*generate_irq_prop)(void *fdt,
-							     u8 irq,
-							     enum irq_type))
-{
-	char dev_name[DEVICE_NAME_MAX_LEN];
-	struct virtio_mmio *vmmio = container_of(dev_hdr,
-						 struct virtio_mmio,
-						 dev_hdr);
-	u64 addr = vmmio->addr;
-	u64 reg_prop[] = {
-		cpu_to_fdt64(addr),
-		cpu_to_fdt64(VIRTIO_MMIO_IO_SIZE),
-	};
-
-	snprintf(dev_name, DEVICE_NAME_MAX_LEN, "virtio@%llx", addr);
-
-	_FDT(fdt_begin_node(fdt, dev_name));
-	_FDT(fdt_property_string(fdt, "compatible", "virtio,mmio"));
-	_FDT(fdt_property(fdt, "reg", reg_prop, sizeof(reg_prop)));
-	_FDT(fdt_property(fdt, "dma-coherent", NULL, 0));
-	generate_irq_prop(fdt, vmmio->irq, IRQ_TYPE_EDGE_RISING);
-	_FDT(fdt_end_node(fdt));
-}
-#else
-static void generate_virtio_mmio_fdt_node(void *fdt,
-					  struct device_header *dev_hdr,
-					  void (*generate_irq_prop)(void *fdt,
-								    u8 irq))
-{
-	die("Unable to generate device tree nodes without libfdt\n");
-}
-#endif
-#endif
-
 int virtio_mmio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		     int device_id, int subsys_id, int class, u32 addr, u8 irq)
 {
@@ -321,21 +281,6 @@ int virtio_mmio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		.vendor_id	= 0x4d564b4c , /* 'LKVM' */
 		.queue_num_max	= 256,
 	};
-
-#if 0
-	vmmio->dev_hdr = (struct device_header) {
-		.bus_type	= DEVICE_BUS_MMIO,
-		.data		= generate_virtio_mmio_fdt_node,
-	};
-
-	vmmio->irq = irq__alloc_line();
-
-	r = device__register(&vmmio->dev_hdr);
-	if (r < 0) {
-		demu_deregister_memory_space(vmmio->addr);
-		return r;
-	}
-#endif
 
 	/*
 	 * Instantiate guest virtio-mmio devices using kernel command line

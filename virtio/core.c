@@ -276,21 +276,6 @@ int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 	int r;
 
 	switch (trans) {
-#if 0
-	case VIRTIO_PCI:
-		virtio = calloc(sizeof(struct virtio_pci), 1);
-		if (!virtio)
-			return -ENOMEM;
-		vdev->virtio			= virtio;
-		vdev->ops			= ops;
-		vdev->ops->signal_vq		= virtio_pci__signal_vq;
-		vdev->ops->signal_config	= virtio_pci__signal_config;
-		vdev->ops->init			= virtio_pci__init;
-		vdev->ops->exit			= virtio_pci__exit;
-		vdev->ops->reset		= virtio_pci__reset;
-		r = vdev->ops->init(kvm, dev, vdev, device_id, subsys_id, class);
-		break;
-#endif
 	case VIRTIO_MMIO:
 		virtio = calloc(sizeof(struct virtio_mmio), 1);
 		if (!virtio)
@@ -311,36 +296,3 @@ int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 	return r;
 }
 
-#if 0
-int virtio_compat_add_message(const char *device, const char *config)
-{
-	int len = 1024;
-	int compat_id;
-	char *title;
-	char *desc;
-
-	title = malloc(len);
-	if (!title)
-		return -ENOMEM;
-
-	desc = malloc(len);
-	if (!desc) {
-		free(title);
-		return -ENOMEM;
-	}
-
-	snprintf(title, len, "%s device was not detected.", device);
-	snprintf(desc,  len, "While you have requested a %s device, "
-			     "the guest kernel did not initialize it.\n"
-			     "\tPlease make sure that the guest kernel was "
-			     "compiled with %s=y enabled in .config.",
-			     device, config);
-
-	compat_id = compat__add_message(title, desc);
-
-	free(desc);
-	free(title);
-
-	return compat_id;
-}
-#endif
