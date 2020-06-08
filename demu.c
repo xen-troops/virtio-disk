@@ -84,8 +84,6 @@ static u8 image_count;
 
 bool do_debug_print = true;
 
-#define MAPCACHE_IN_THRESHOLD	0x30
-
 #define __max(_x, _y) (((_x) > (_y)) ? (_x) : (_y))
 
 typedef enum {

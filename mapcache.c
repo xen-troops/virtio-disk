@@ -42,7 +42,7 @@
 #include "debug.h"
 #include "demu.h"
 
-#include "kvm/disk-image.h"
+#include "kvm/kvm.h"
 
 /*static unsigned long count[MAX_DISK_IMAGES];*/
 

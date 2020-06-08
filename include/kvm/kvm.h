@@ -34,10 +34,6 @@ struct kvm {
 	int                     nr_disks;
 };
 
-void kvm__irq_trigger(struct kvm *kvm, int irq);
-
-void *guest_flat_to_host(struct kvm *kvm, u64 offset, u32 size);
-
 static inline void kvm__set_thread_name(const char *name)
 {
 	prctl(PR_SET_NAME, name);

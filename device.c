@@ -43,66 +43,43 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 
-#include <xenctrl.h>
-
 #include "debug.h"
 #include "demu.h"
 #include "device.h"
 #include "mapcache.h"
 
 #include "kvm/kvm.h"
-#include "kvm/virtio-mmio.h"
-#include <linux/err.h>
 
-/*
- * XXX:
- * 1. The initialization of virtio stuff should be refactored.
- */
-
-static struct kvm *kvm_inst;
-
-static struct kvm *kvm_init(struct disk_image_params *disk_image, u8 image_count)
-{
-	struct kvm *kvm = calloc(1, sizeof(*kvm));
-	int rc;
-
-	if (!kvm)
-		return ERR_PTR(-ENOMEM);
-
-	memcpy(kvm->cfg.disk_image, disk_image, sizeof(*disk_image) * image_count);
-	kvm->cfg.image_count = image_count;
-	kvm->nr_disks = kvm->cfg.image_count;
-
-	rc = init_list__init(kvm);
-	if (rc < 0) {
-		DBG ("Initialization failed\n");
-		free(kvm);
-		return ERR_PTR(rc);
-	}
-
-	return kvm;
-}
-
-static void kvm_exit(struct kvm *kvm)
-{
-	init_list__exit(kvm);
-}
+static struct kvm *kvm;
 
 int device_initialize(struct disk_image_params *disk_image, u8 image_count)
 {
-    kvm_inst = kvm_init(disk_image, image_count);
-    if (IS_ERR(kvm_inst))
-        return PTR_ERR(kvm_inst);
+    int rc;
+
+    kvm = calloc(1, sizeof(*kvm));
+    if (!kvm)
+        return -ENOMEM;
+
+    memcpy(kvm->cfg.disk_image, disk_image, sizeof(*disk_image) * image_count);
+    kvm->cfg.image_count = image_count;
+    kvm->nr_disks = kvm->cfg.image_count;
+
+    rc = init_list__init(kvm);
+    if (rc < 0) {
+        DBG ("Initialization failed\n");
+        free(kvm);
+        return rc;
+    }
 
     return 0;
 }
 
 void device_teardown(void)
 {
-    if (!IS_ERR_OR_NULL(kvm_inst)) {
-        kvm_exit(kvm_inst);
-        free(kvm_inst);
-        kvm_inst = NULL;
+    if (kvm) {
+        init_list__exit(kvm);
+        free(kvm);
+        kvm = NULL;
     }
 
 #ifdef USE_MAPCACHE

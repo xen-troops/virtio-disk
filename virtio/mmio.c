@@ -25,7 +25,7 @@ static inline void ioport__write32(u32 *data, u32 value)
 	*data = cpu_to_le32(value);
 }
 
-void kvm__irq_trigger(struct kvm *kvm, int irq)
+static void kvm__irq_trigger(struct kvm *kvm, int irq)
 {
 	demu_set_irq(irq, VIRTIO_IRQ_HIGH);
 	demu_set_irq(irq, VIRTIO_IRQ_LOW);

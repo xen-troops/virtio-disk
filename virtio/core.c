@@ -11,11 +11,6 @@
 
 #include "../demu.h"
 
-void *guest_flat_to_host(struct kvm *kvm, u64 offset, u32 size)
-{
-	return demu_map_guest_range(offset, size);
-}
-
 const char* virtio_trans_name(enum virtio_trans trans)
 {
 	if (trans == VIRTIO_PCI)
@@ -112,7 +107,7 @@ u16 virt_queue__get_head_iov(struct virt_queue *vq, struct iovec iov[], u16 *out
 	if (virt_desc__test_flag(vq, &desc[idx], VRING_DESC_F_INDIRECT)) {
 		max = virtio_guest_to_host_u32(vq, desc[idx].len) / sizeof(struct vring_desc);
 		mapped = virtio_guest_to_host_u32(vq, desc[idx].len);
-		desc = guest_flat_to_host(kvm, virtio_guest_to_host_u64(vq, desc[idx].addr),
+		desc = demu_map_guest_range(virtio_guest_to_host_u64(vq, desc[idx].addr),
 				virtio_guest_to_host_u32(vq, desc[idx].len));
 		idx = 0;
 	}
@@ -125,7 +120,7 @@ u16 virt_queue__get_head_iov(struct virt_queue *vq, struct iovec iov[], u16 *out
 		iov[*out + *in].iov_base = (void *)virtio_guest_to_host_u64(vq, desc[idx].addr);
 #else
 		/* Map all descriptors */
-		iov[*out + *in].iov_base = guest_flat_to_host(kvm,
+		iov[*out + *in].iov_base = demu_map_guest_range(
 				virtio_guest_to_host_u64(vq, desc[idx].addr),
 				virtio_guest_to_host_u32(vq, desc[idx].len));
 #endif
@@ -166,12 +161,12 @@ u16 virt_queue__get_inout_iov(struct kvm *kvm, struct virt_queue *queue,
 		desc = virt_queue__get_desc(queue, idx);
 		addr = virtio_guest_to_host_u64(queue, desc->addr);
 		if (virt_desc__test_flag(queue, desc, VRING_DESC_F_WRITE)) {
-			in_iov[*in].iov_base = guest_flat_to_host(kvm, addr,
+			in_iov[*in].iov_base = demu_map_guest_range(addr,
 					virtio_guest_to_host_u32(queue, desc->len));
 			in_iov[*in].iov_len = virtio_guest_to_host_u32(queue, desc->len);
 			(*in)++;
 		} else {
-			out_iov[*out].iov_base = guest_flat_to_host(kvm, addr,
+			out_iov[*out].iov_base = demu_map_guest_range(addr,
 					virtio_guest_to_host_u32(queue, desc->len));
 			out_iov[*out].iov_len = virtio_guest_to_host_u32(queue, desc->len);
 			(*out)++;

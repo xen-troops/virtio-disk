@@ -212,10 +212,12 @@ int virtio_compat_add_message(const char *device, const char *config);
 #endif
 const char* virtio_trans_name(enum virtio_trans trans);
 
-static inline void *virtio_get_vq(struct kvm *kvm, u32 pfn, u32 page_size, u32 size)
+#if 0
+static inline void *virtio_get_vq(struct kvm *kvm, u32 pfn, u32 page_size)
 {
-	return guest_flat_to_host(kvm, (u64)pfn * page_size, size);
+	return guest_flat_to_host(kvm, (u64)pfn * page_size);
 }
+#endif
 
 static inline void virtio_init_device_vq(struct virtio_device *vdev,
 					 struct virt_queue *vq)
