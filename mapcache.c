@@ -44,8 +44,6 @@
 
 #include "kvm/kvm.h"
 
-/*static unsigned long count[MAX_DISK_IMAGES];*/
-
 typedef struct mapcache_entry {
     void     *ptr;
     xen_pfn_t   pfn;
@@ -94,8 +92,6 @@ __mapcache_fault(int index, xen_pfn_t pfn)
     uint64_t    oldest_epoch;
     mapcache_entry_t *entry;
 
-    /*DBG("%"PRIx64"\n", pfn);*/
-
     bucket = pfn % MAPCACHE_BUCKET_COUNT;
 
     oldest_epoch = mapcache_epoch[index];
@@ -112,8 +108,6 @@ __mapcache_fault(int index, xen_pfn_t pfn)
             continue;
 
         if (entry->ptr != NULL) {
-            /*DBG("unmap page %"PRIx64": %p (%d: %lu)\n", entry->pfn, entry->ptr,
-                index, --count[index]);*/
             demu_unmap_guest_page(entry->ptr);
             entry->ptr = NULL;
         }
@@ -123,9 +117,6 @@ __mapcache_fault(int index, xen_pfn_t pfn)
             entry->pfn = pfn;
             mapcache_empty[index] = 0;
         }
-
-        /*DBG("map page %"PRIx64": %p (%d: %lu)\n", entry->pfn, entry->ptr,
-            index, ++count[index]);*/
 
         break;
     }
@@ -171,8 +162,6 @@ mapcache_invalidate(int index)
         mapcache_entry_t *entry = &mapcache[index][i];
 
         if (entry->ptr != NULL) {
-            /*DBG("unmap page %"PRIx64": %p (%d: %lu)\n", entry->pfn, entry->ptr,
-                index, --count[index]);*/
             demu_unmap_guest_page(entry->ptr);
             entry->ptr = NULL;
             entry->pfn = 0;

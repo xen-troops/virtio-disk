@@ -80,8 +80,6 @@ static u8 image_count;
  * 1. This file should be refactored heavily.
  */
 
-/*static unsigned long count;*/
-
 bool do_debug_print = true;
 
 #define __max(_x, _y) (((_x) > (_y)) ? (_x) : (_y))
@@ -158,8 +156,6 @@ demu_map_guest_range(uint64_t addr, uint64_t size)
     int         i, n, *err;
     void        *ptr;
 
-    /*DBG("%"PRIx64"+%"PRIx64" (%lu)\n", addr, size, ++count);*/
-
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
     n = size >> TARGET_PAGE_SHIFT;
 
@@ -215,8 +211,6 @@ int
 demu_unmap_guest_range(void *ptr, uint64_t size)
 {
     int n;
-
-    /*DBG("%p+%"PRIx64" (%lu)\n", ptr, size, --count);*/
 
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
     n = size >> TARGET_PAGE_SHIFT;
