@@ -41,11 +41,11 @@ void    demu_set_irq(int irq, int level);
 
 #define	P2ROUNDUP(_x, _a) -(-(_x) & -(_a))
 
-void *demu_map_guest_pages(xen_pfn_t pfn[], int err[], unsigned int n);
+void *demu_map_guest_pages(xen_pfn_t pfn[], unsigned int n);
 
 static inline void *demu_map_guest_page(xen_pfn_t pfn)
 {
-    return demu_map_guest_pages(&pfn, NULL, 1);
+    return demu_map_guest_pages(&pfn, 1);
 }
 
 void demu_unmap_guest_pages(void *ptr, unsigned int n);

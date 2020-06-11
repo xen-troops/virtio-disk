@@ -142,18 +142,18 @@ demu_set_irq(int irq, int level)
 }
 
 void *
-demu_map_guest_pages(xen_pfn_t pfn[], int err[], unsigned int n)
+demu_map_guest_pages(xen_pfn_t pfn[], unsigned int n)
 {
     return xenforeignmemory_map(demu_state.xfh, demu_state.domid,
                                 PROT_READ | PROT_WRITE, n,
-                                pfn, err);
+                                pfn, NULL);
 }
 
 void *
 demu_map_guest_range(uint64_t addr, uint64_t size)
 {
     xen_pfn_t   *pfn;
-    int         i, n, *err;
+    int         i, n;
     void        *ptr;
 
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
@@ -163,31 +163,16 @@ demu_map_guest_range(uint64_t addr, uint64_t size)
     if (pfn == NULL)
         goto fail1;
 
-    err = malloc(sizeof (int) * n);
-    if (err == NULL)
-        goto fail2;
-
     for (i = 0; i < n; i++)
         pfn[i] = (addr >> TARGET_PAGE_SHIFT) + i;
-    
-    ptr = demu_map_guest_pages(pfn, err, n);
-    if (ptr == NULL) {
-        for (i = 0; i < n; i++) {
-            if (err[i])
-                DBG("Failed to map pfn[%d] %"PRIx64": %d\n", i, pfn[i], err[i]);
-        }
-        goto fail3;
-    }
-    
-    free(err);
+
+    ptr = demu_map_guest_pages(pfn, n);
+    if (ptr == NULL)
+        goto fail2;
+
     free(pfn);
 
     return ptr + (addr & ~TARGET_PAGE_MASK);
-    
-fail3:
-    DBG("fail3\n");
-
-    free(err);
 
 fail2:
     DBG("fail2\n");
