@@ -738,10 +738,6 @@ demu_initialize(void)
 
     DBG("%d vCPU(s)\n", demu_state.vcpus);
 
-    rc = xc_domain_set_target(demu_state.xch, demu_state.be_domid, demu_state.domid);
-    if (rc < 0)
-        goto fail5;
-
     rc = xendevicemodel_create_ioreq_server(demu_state.xdh,
                                             demu_state.domid, 1,
                                             &demu_state.ioservid);
