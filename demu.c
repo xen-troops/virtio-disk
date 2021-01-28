@@ -96,7 +96,6 @@ typedef enum {
     DEMU_SEQ_SERVER_ENABLED,
     DEMU_SEQ_PORT_ARRAY_ALLOCATED,
     DEMU_SEQ_PORTS_BOUND,
-    DEMU_SEQ_BUF_PORT_BOUND,
     DEMU_SEQ_DEVICE_INITIALIZED,
     DEMU_SEQ_INITIALIZED,
     DEMU_NR_SEQS
@@ -125,9 +124,6 @@ typedef struct demu_state {
     xenforeignmemory_resource_handle *resource;
     shared_iopage_t                  *shared_iopage;
     evtchn_port_t                    *ioreq_local_port;
-    buffered_iopage_t                *buffered_iopage;
-    evtchn_port_t                    buf_ioreq_port;
-    evtchn_port_t                    buf_ioreq_local_port;
     demu_space_t                     *memory;
     struct xs_dev                    *xs_dev;
 } demu_state_t;
@@ -427,7 +423,6 @@ demu_seq_next(void)
     case DEMU_SEQ_RESOURCE_MAPPED:
         DBG(">RESOURCE_MAPPED\n");
         DBG("shared_iopage = %p\n", demu_state.shared_iopage);
-        DBG("buffered_iopage = %p\n", demu_state.buffered_iopage);
         break;
 
     case DEMU_SEQ_SERVER_ENABLED:
@@ -450,14 +445,6 @@ demu_seq_next(void)
 
         break;
     }
-
-    case DEMU_SEQ_BUF_PORT_BOUND:
-        DBG(">EVTCHN_BUF_PORT_BOUND\n");
-
-        DBG("%u -> %u\n",
-            demu_state.buf_ioreq_port,
-            demu_state.buf_ioreq_local_port);
-        break;
 
     case DEMU_SEQ_DEVICE_INITIALIZED:
         DBG(">DEVICE_INITIALIZED\n");
@@ -485,18 +472,6 @@ demu_teardown(void)
     if (demu_state.seq == DEMU_SEQ_DEVICE_INITIALIZED) {
         DBG("<DEVICE_INITIALIZED\n");
         device_teardown();
-
-        demu_state.seq = DEMU_SEQ_BUF_PORT_BOUND;
-    }
-
-    if (demu_state.seq >= DEMU_SEQ_BUF_PORT_BOUND) {
-        DBG("<EVTCHN_BUF_PORT_BOUND\n");
-        evtchn_port_t   port;
-
-        port = demu_state.buf_ioreq_local_port;
-
-        DBG("%u\n", port);
-        (void) xenevtchn_unbind(demu_state.xeh, port);
 
         demu_state.seq = DEMU_SEQ_PORTS_BOUND;
     }
@@ -696,7 +671,6 @@ demu_initialize(void)
     xc_dominfo_t    dominfo;
     void            *addr;
     evtchn_port_t   port;
-    evtchn_port_t   buf_port;
     int             i;
 
     rc = xenstore_connect_dom(demu_state.xs_dev, demu_state.be_domid,
@@ -739,7 +713,7 @@ demu_initialize(void)
     DBG("%d vCPU(s)\n", demu_state.vcpus);
 
     rc = xendevicemodel_create_ioreq_server(demu_state.xdh,
-                                            demu_state.domid, 1,
+                                            demu_state.domid, HVM_IOREQSRV_BUFIOREQ_OFF,
                                             &demu_state.ioservid);
     if (rc < 0)
         goto fail6;
@@ -750,21 +724,14 @@ demu_initialize(void)
     demu_state.resource =
         xenforeignmemory_map_resource(demu_state.xfh, demu_state.domid,
                                       XENMEM_resource_ioreq_server,
-                                      demu_state.ioservid, 0, 2,
+                                      demu_state.ioservid,
+                                      XENMEM_resource_ioreq_server_frame_ioreq(0), 1,
                                       &addr,
                                       PROT_READ | PROT_WRITE, 0);
     if (demu_state.resource == NULL)
         goto fail7;
 
-    demu_state.buffered_iopage = addr;
-    demu_state.shared_iopage = addr + XC_PAGE_SIZE;
-
-    rc = xendevicemodel_get_ioreq_server_info(demu_state.xdh,
-                                              demu_state.domid,
-                                              demu_state.ioservid,
-                                              NULL, NULL, &buf_port);
-    if (rc < 0)
-        goto fail8;
+    demu_state.shared_iopage = addr;
 
     demu_seq_next();
 
@@ -773,14 +740,14 @@ demu_initialize(void)
                                                demu_state.ioservid,
                                                1);
     if (rc != 0)
-        goto fail9;
+        goto fail8;
 
     demu_seq_next();
 
     demu_state.ioreq_local_port = malloc(sizeof (evtchn_port_t) *
                                          demu_state.vcpus);
     if (demu_state.ioreq_local_port == NULL)
-        goto fail10;
+        goto fail9;
 
     for (i = 0; i < demu_state.vcpus; i++)
         demu_state.ioreq_local_port[i] = -1;
@@ -793,25 +760,16 @@ demu_initialize(void)
         rc = xenevtchn_bind_interdomain(demu_state.xeh, demu_state.domid,
                                         port);
         if (rc < 0)
-            goto fail11;
+            goto fail10;
 
         demu_state.ioreq_local_port[i] = rc;
     }
 
     demu_seq_next();
 
-    rc = xenevtchn_bind_interdomain(demu_state.xeh, demu_state.domid,
-                                    buf_port);
-    if (rc < 0)
-        goto fail12;
-
-    demu_state.buf_ioreq_local_port = rc;
-
-    demu_seq_next();
-
     rc = device_initialize(disk_image, image_count);
     if (rc < 0)
-        goto fail13;
+        goto fail11;
 
     demu_seq_next();
 
@@ -819,12 +777,6 @@ demu_initialize(void)
 
     assert(demu_state.seq == DEMU_SEQ_INITIALIZED);
     return 0;
-
-fail13:
-    DBG("fail13\n");
-
-fail12:
-    DBG("fail12\n");
 
 fail11:
     DBG("fail11\n");
@@ -867,62 +819,6 @@ fail0:
 }
 
 static void
-demu_poll_buffered_iopage(void)
-{
-    if (demu_state.seq != DEMU_SEQ_INITIALIZED)
-        return;
-
-    for (;;) {
-        unsigned int    read_pointer;
-        unsigned int    write_pointer;
-        
-        read_pointer = demu_state.buffered_iopage->read_pointer;
-        write_pointer = demu_state.buffered_iopage->write_pointer;
-        xen_mb();
-
-        if (read_pointer == write_pointer)
-            break;
-
-        while (read_pointer != write_pointer) {
-            unsigned int    slot;
-            buf_ioreq_t     *buf_ioreq;
-            ioreq_t         ioreq;
-
-            slot = read_pointer % IOREQ_BUFFER_SLOT_NUM;
-
-            buf_ioreq = &demu_state.buffered_iopage->buf_ioreq[slot];
-
-            ioreq.size = 1UL << buf_ioreq->size;
-            ioreq.count = 1;
-            ioreq.addr = buf_ioreq->addr;
-            ioreq.data = buf_ioreq->data;
-            ioreq.state = STATE_IOREQ_READY;
-            ioreq.dir = buf_ioreq->dir;
-            ioreq.df = 1;
-            ioreq.type = buf_ioreq->type;
-            ioreq.data_is_ptr = 0;
-
-            read_pointer++;
-
-            if (ioreq.size == 8) {
-                slot = read_pointer % IOREQ_BUFFER_SLOT_NUM;
-                buf_ioreq = &demu_state.buffered_iopage->buf_ioreq[slot];
-
-                ioreq.data |= ((uint64_t)buf_ioreq->data) << 32;
-
-                read_pointer++;
-            }
-
-            demu_handle_ioreq(&ioreq);
-            xen_mb();
-        }
-
-        demu_state.buffered_iopage->read_pointer = read_pointer;
-        xen_mb();
-    }
-}
-
-static void
 demu_poll_shared_iopage(unsigned int i)
 {
     ioreq_t *ioreq;
@@ -962,15 +858,10 @@ demu_poll_iopages(void)
     if (port < 0)
         return;
 
-    if (port == demu_state.buf_ioreq_local_port) {
-        xenevtchn_unmask(demu_state.xeh, port);
-        demu_poll_buffered_iopage();
-    } else {
-        for (i = 0; i < demu_state.vcpus; i++) {
-            if (port == demu_state.ioreq_local_port[i]) {
-                xenevtchn_unmask(demu_state.xeh, port);
-                demu_poll_shared_iopage(i);
-            }
+    for (i = 0; i < demu_state.vcpus; i++) {
+        if (port == demu_state.ioreq_local_port[i]) {
+            xenevtchn_unmask(demu_state.xeh, port);
+            demu_poll_shared_iopage(i);
         }
     }
 }
