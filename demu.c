@@ -582,70 +582,33 @@ demu_sigterm(int num)
 
 static int demu_read_xenstore_config(void *unused)
 {
-    char **entries = NULL;
-    unsigned int num, i;
-    int ret = 0;
-
-    entries = xs_directory(demu_state.xs_dev->xsh, XBT_NULL,
-                           demu_state.xs_dev->fe, &num);
-    if (!entries)
-        return -1;
+    char *str;
+    int val, ret = 0;
 
     image_count = 0;
-    for (i = 0; i < num; i++) {
-        char *str, *end, node[32];
-        int index, val;
 
-        index = strtol(entries[i], &end, 0);
-        if (*end != '\0')
-           continue;
+    str = xenstore_read_be_str(demu_state.xs_dev, "mode");
+    if (!str)
+        return -1;
+    disk_image[image_count].readonly = !strchr(str, 'w');
+    free(str);
 
-        if (index >= MAX_DISK_IMAGES || index != image_count) {
-            ret = -1;
-            break;
-        }
+    ret = xenstore_read_be_int(demu_state.xs_dev, "base", &val);
+    if (ret < 0)
+        return ret;
+    disk_image[image_count].addr = val;
 
-        snprintf(node, sizeof(node), "%d/readonly", index);
-        ret = xenstore_read_fe_int(demu_state.xs_dev, node, &val);
-        if (ret < 0)
-            break;
-        disk_image[image_count].readonly = val;
+    ret = xenstore_read_be_int(demu_state.xs_dev, "irq", &val);
+    if (ret < 0)
+        return ret;
+    disk_image[image_count].irq = val;
 
-        snprintf(node, sizeof(node), "%d/base", index);
-        ret = xenstore_read_fe_int(demu_state.xs_dev, node, &val);
-        if (ret < 0)
-            break;
-        disk_image[image_count].addr = val;
+    str = xenstore_read_be_str(demu_state.xs_dev, "params");
+    if (!str)
+        return -1;
+    disk_image[image_count].filename = str;
 
-        snprintf(node, sizeof(node), "%d/irq", index);
-        ret = xenstore_read_fe_int(demu_state.xs_dev, node, &val);
-        if (ret < 0)
-            break;
-        disk_image[image_count].irq = val;
-
-        snprintf(node, sizeof(node), "%d/filename", index);
-        str = xenstore_read_fe_str(demu_state.xs_dev, node);
-        if (!str) {
-            ret = -1;
-            break;
-        }
-        disk_image[image_count].filename = str;
-
-        image_count ++;
-    }
-
-    free(entries);
-
-    if (!image_count)
-        ret = -1;
-    else if (ret < 0) {
-        for (i = 0; i < image_count; i++) {
-            if (disk_image[i].filename) {
-                free((void *)disk_image[i].filename);
-                disk_image[i].filename = NULL;
-            }
-        }
-    }
+    image_count ++;
 
     return ret;
 }
