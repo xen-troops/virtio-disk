@@ -87,7 +87,6 @@ bool do_debug_print = true;
 typedef enum {
     DEMU_SEQ_UNINITIALIZED = 0,
     DEMU_SEQ_XENSTORE_ATTACHED,
-    DEMU_SEQ_XENCTRL_OPEN,
     DEMU_SEQ_XENEVTCHN_OPEN,
     DEMU_SEQ_XENFOREIGNMEMORY_OPEN,
     DEMU_SEQ_XENDEVICEMODEL_OPEN,
@@ -113,7 +112,6 @@ struct demu_space {
 
 typedef struct demu_state {
     demu_seq_t                       seq;
-    xc_interface                     *xch;
     xenevtchn_handle                 *xeh;
     xenforeignmemory_handle          *xfh;
     xendevicemodel_handle            *xdh;
@@ -399,10 +397,6 @@ demu_seq_next(void)
         break;
     }
 
-    case DEMU_SEQ_XENCTRL_OPEN:
-        DBG(">XENCTRL_OPEN\n");
-        break;
-
     case DEMU_SEQ_XENEVTCHN_OPEN:
         DBG(">XENEVTCHN_OPEN\n");
         break;
@@ -552,14 +546,6 @@ demu_teardown(void)
 
         xenevtchn_close(demu_state.xeh);
 
-        demu_state.seq = DEMU_SEQ_XENCTRL_OPEN;
-    }
-
-    if (demu_state.seq >= DEMU_SEQ_XENCTRL_OPEN) {
-        DBG("<XENCTRL_OPEN\n");
-
-        xc_interface_close(demu_state.xch);
-
         demu_state.seq = DEMU_SEQ_XENSTORE_ATTACHED;
     }
 
@@ -668,7 +654,6 @@ static int
 demu_initialize(void)
 {
     int             rc;
-    xc_dominfo_t    dominfo;
     void            *addr;
     evtchn_port_t   port;
     int             i;
@@ -680,35 +665,27 @@ demu_initialize(void)
 
     demu_seq_next();
 
-    demu_state.xch = xc_interface_open(NULL, NULL, 0);
-    if (demu_state.xch == NULL)
-        goto fail1;
-
-    demu_seq_next();
-
     demu_state.xeh = xenevtchn_open(NULL, 0);
     if (demu_state.xeh == NULL)
-        goto fail2;
+        goto fail1;
 
     demu_seq_next();
 
     demu_state.xfh = xenforeignmemory_open(NULL, 0);
     if (demu_state.xfh == NULL)
-        goto fail3;
+        goto fail2;
 
     demu_seq_next();
 
     demu_state.xdh = xendevicemodel_open(NULL, 0);
     if (demu_state.xdh == NULL)
-        goto fail4;
+        goto fail3;
 
     demu_seq_next();
 
-    rc = xc_domain_getinfo(demu_state.xch, demu_state.domid, 1, &dominfo);
-    if (rc < 0 || dominfo.domid != demu_state.domid)
-        goto fail5;
-
-    demu_state.vcpus = dominfo.max_vcpu_id + 1;
+    rc = xendevicemodel_nr_vcpus(demu_state.xdh, demu_state.domid, &demu_state.vcpus);
+    if (rc < 0)
+        goto fail4;
 
     DBG("%d vCPU(s)\n", demu_state.vcpus);
 
@@ -716,7 +693,7 @@ demu_initialize(void)
                                             demu_state.domid, HVM_IOREQSRV_BUFIOREQ_OFF,
                                             &demu_state.ioservid);
     if (rc < 0)
-        goto fail6;
+        goto fail5;
     
     demu_seq_next();
 
@@ -729,7 +706,7 @@ demu_initialize(void)
                                       &addr,
                                       PROT_READ | PROT_WRITE, 0);
     if (demu_state.resource == NULL)
-        goto fail7;
+        goto fail6;
 
     demu_state.shared_iopage = addr;
 
@@ -740,14 +717,14 @@ demu_initialize(void)
                                                demu_state.ioservid,
                                                1);
     if (rc != 0)
-        goto fail8;
+        goto fail7;
 
     demu_seq_next();
 
     demu_state.ioreq_local_port = malloc(sizeof (evtchn_port_t) *
                                          demu_state.vcpus);
     if (demu_state.ioreq_local_port == NULL)
-        goto fail9;
+        goto fail8;
 
     for (i = 0; i < demu_state.vcpus; i++)
         demu_state.ioreq_local_port[i] = -1;
@@ -760,7 +737,7 @@ demu_initialize(void)
         rc = xenevtchn_bind_interdomain(demu_state.xeh, demu_state.domid,
                                         port);
         if (rc < 0)
-            goto fail10;
+            goto fail9;
 
         demu_state.ioreq_local_port[i] = rc;
     }
@@ -769,7 +746,7 @@ demu_initialize(void)
 
     rc = device_initialize(disk_image, image_count);
     if (rc < 0)
-        goto fail11;
+        goto fail10;
 
     demu_seq_next();
 
@@ -777,9 +754,6 @@ demu_initialize(void)
 
     assert(demu_state.seq == DEMU_SEQ_INITIALIZED);
     return 0;
-
-fail11:
-    DBG("fail11\n");
 
 fail10:
     DBG("fail10\n");
