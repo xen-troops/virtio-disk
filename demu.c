@@ -387,6 +387,7 @@ demu_seq_next(void)
 
         DBG(">XENSTORE_ATTACHED\n");
         DBG("domid = %u\n", demu_state.domid);
+        DBG("devid = %u\n", demu_state.xs_dev->devid);
 
         for (i = 0; i < image_count; i++) {
             DBG("filename[%d] = %s\n", i, disk_image[i].filename);

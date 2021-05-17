@@ -179,12 +179,11 @@ int xenstore_connect_dom(struct xs_dev *dev, domid_t be_domid, domid_t fe_domid,
 
     dev->be_domid = be_domid;
     dev->fe_domid = fe_domid;
-    dev->dev = 0;
     dev->connected_cb = connected_cb;
     dev->data = data;
 
     snprintf(dev->be, sizeof(dev->be), "backend/%s/%d/%d",
-            dev->type, dev->fe_domid, dev->dev);
+            dev->type, dev->fe_domid, dev->devid);
 
     if (xenstore_read_be_int(dev, "state", &state) == -1) {
         pr_err("reading backend state failed\n");
@@ -311,14 +310,29 @@ static bool xenstore_check_fe_exists(struct xs_dev *dev, domid_t domid)
     char path[XEN_BUFSIZE];
     unsigned int len;
     char *val;
+    char **devid;
+    unsigned int num;
+
+    snprintf(path, sizeof(path), "backend/%s/%d",
+            dev->type, domid);
+
+    devid = xs_directory(dev->xsh, XBT_NULL, path, &num);
+    if (!devid)
+       return false;
+
+    if (num > 1)
+        pr_warning("got %u devices, but only single device is supported\n", num);
+    dev->devid = atoi(devid[0]);
+    free(devid);
 
     snprintf(path, sizeof(path), "/local/domain/%u/device/%s/%d",
-            domid, dev->type, 0);
+            domid, dev->type, dev->devid);
     val = xs_read(dev->xsh, XBT_NULL, path, &len);
     if (val) {
         free(val);
         return true;
     }
+    dev->devid = 0;
 
     return false;
 }

@@ -35,7 +35,7 @@ struct xs_dev {
     domid_t be_domid;
     domid_t fe_domid;
     const char *type;
-    int dev;
+    int devid;
     char be[XEN_BUFSIZE];
     char path[XEN_BUFSIZE];
     char *fe;
