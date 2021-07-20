@@ -46,7 +46,6 @@
 #include "debug.h"
 #include "demu.h"
 #include "device.h"
-#include "mapcache.h"
 
 #include "kvm/kvm.h"
 
@@ -81,12 +80,6 @@ void device_teardown(void)
         free(kvm);
         kvm = NULL;
     }
-
-#ifdef USE_MAPCACHE
-    for (int i = 0; i < MAX_DISK_IMAGES; i++)
-        mapcache_invalidate(i);
-    mapcache_inval_cnt = 0;
-#endif
 }
 
 /*

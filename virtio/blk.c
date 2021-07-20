@@ -15,7 +15,6 @@
 #include <pthread.h>
 
 #include "../demu.h"
-#include "../mapcache.h"
 
 #define PCI_DEVICE_ID_VIRTIO_BLK	0x1001
 #define PCI_CLASS_BLK				0x018000
@@ -81,15 +80,9 @@ void virtio_blk_complete(void *param, long len)
 	if (virtio_queue__should_signal(&bdev->vqs[queueid]))
 		bdev->vdev.ops->signal_vq(req->kvm, &bdev->vdev, queueid);
 
-#ifdef USE_MAPCACHE
-	/* Unmap data descriptors */
-	for (i = 1; i < req->out + req->in - 1; i++)
-		demu_unmap_guest_range(req->iov[i].iov_base, req->iov[i].iov_len);
-#else
 	/* Unmap all descriptors */
 	for (i = 0; i < req->out + req->in; i++)
 		demu_unmap_guest_range(req->iov[i].iov_base, req->iov[i].iov_len);
-#endif
 }
 
 static void virtio_blk_do_io_request(struct kvm *kvm, struct virt_queue *vq, struct blk_dev_req *req)
@@ -101,31 +94,12 @@ static void virtio_blk_do_io_request(struct kvm *kvm, struct virt_queue *vq, str
 	u16 out, in;
 	u32 type;
 	u64 sector;
-#ifdef USE_MAPCACHE
-	u16 last;
-	int i;
-#endif
 
 	block_cnt	= -1;
 	bdev		= req->bdev;
 	iov		= req->iov;
 	out		= req->out;
 	in		= req->in;
-
-#ifdef USE_MAPCACHE
-	/* Cache header descriptor  */
-	iov[0].iov_base = mapcache_lookup(bdev->index,
-			(u64)iov[0].iov_base, iov[0].iov_len);
-
-	/* Cache status descriptor */
-	last = out + in - 1;
-	iov[last].iov_base = mapcache_lookup(bdev->index,
-			(u64)iov[last].iov_base, iov[last].iov_len);
-
-	/* Map data descriptors */
-	for (i = 1; i < last; i++)
-		iov[i].iov_base = demu_map_guest_range((u64)iov[i].iov_base, iov[i].iov_len);
-#endif
 
 	req_hdr		= iov[0].iov_base;
 
@@ -228,12 +202,6 @@ static void *virtio_blk_thread(void *dev)
 		r = read(bdev->io_efd, &data, sizeof(u64));
 		if (r < 0)
 			continue;
-#ifdef USE_MAPCACHE
-		if (mapcache_inval_cnt != bdev->inval_cnt) {
-			mapcache_invalidate(bdev->index);
-			bdev->inval_cnt = mapcache_inval_cnt;
-		}
-#endif
 		virtio_blk_do_io(bdev->kvm, &bdev->vqs[0], bdev);
 	}
 

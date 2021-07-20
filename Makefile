@@ -3,7 +3,6 @@ INSTALL = install
 PREFIX=/usr/bin
 
 OBJS :=	device.o \
-	mapcache.o \
 	xs_dev.o \
 	demu.o
 
@@ -29,7 +28,7 @@ OBJS	+= util/util.o
 CFLAGS  = -I$(shell pwd)/include
 
 # _GNU_SOURCE for asprintf.
-CFLAGS += -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_GNU_SOURCE -DUSE_MAPCACHE # -DCONFIG_HAS_AIO
+CFLAGS += -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_GNU_SOURCE # -DCONFIG_HAS_AIO
 
 CFLAGS += -Wall -Werror -g -O1
 

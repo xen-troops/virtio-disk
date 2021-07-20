@@ -65,7 +65,6 @@
 #include "debug.h"
 #include "device.h"
 #include "demu.h"
-#include "mapcache.h"
 #include "xs_dev.h"
 
 #include "kvm/kvm.h"
@@ -365,9 +364,7 @@ demu_handle_ioreq(ioreq_t *ioreq)
         break;
 
     case IOREQ_TYPE_INVALIDATE:
-#ifdef USE_MAPCACHE
-        mapcache_inval_cnt ++;
-#endif
+        DBG("NOT IMPLEMENTED (%02x)\n", ioreq->type);
         break;
 
     default:
