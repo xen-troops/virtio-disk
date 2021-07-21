@@ -94,6 +94,9 @@ typedef enum {
     DEMU_SEQ_SERVER_ENABLED,
     DEMU_SEQ_PORT_ARRAY_ALLOCATED,
     DEMU_SEQ_PORTS_BOUND,
+#ifdef MAP_IN_ADVANCE
+    DEMU_SEQ_GUEST_RAM_MAPPED,
+#endif
     DEMU_SEQ_DEVICE_INITIALIZED,
     DEMU_SEQ_INITIALIZED,
     DEMU_NR_SEQS
@@ -197,6 +200,93 @@ demu_unmap_guest_range(void *ptr, uint64_t size)
 
     return 0;
 }
+
+#ifdef MAP_IN_ADVANCE
+#define NR_GUEST_RAM 2
+static void *host_addr[NR_GUEST_RAM];
+
+/*
+ * TODO Properly recognize the guest memory layout, for now let's guess
+ * the following (2GB low + 1GB high):
+ */
+static uint64_t guest_ram_base[NR_GUEST_RAM] = {0x40000000UL, 0x200000000UL};
+static uint64_t guest_ram_size[NR_GUEST_RAM] = {0x80000000UL, 0x40000000UL};
+
+static int demu_map_guest_ram(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < NR_GUEST_RAM; i++) {
+		if (host_addr[i])
+			continue;
+
+		if (!guest_ram_base[i] || !guest_ram_size[i])
+			continue;
+
+		host_addr[i] = demu_map_guest_range(guest_ram_base[i], guest_ram_size[i]);
+
+		if (!host_addr[i]) {
+			DBG("Cannot map guest ram%u pa 0x%lx-0x%lx\n",
+					i, guest_ram_base[i], guest_ram_base[i] + guest_ram_size[i]);
+			goto fail;
+		}
+
+		DBG("Mapped guest ram%u pa 0x%lx-0x%lx to va 0x%lx\n",
+				i, guest_ram_base[i], guest_ram_base[i] + guest_ram_size[i],
+				(unsigned long)host_addr[i]);
+	}
+
+	return 0;
+
+fail:
+	while (i--) {
+		if (host_addr[i]) {
+			demu_unmap_guest_range(host_addr[i], guest_ram_size[i]);
+			host_addr[i] = NULL;
+		}
+	}
+
+	return -1;
+}
+
+static void demu_unmap_guest_ram(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < NR_GUEST_RAM; i++) {
+		if (!host_addr[i])
+			continue;
+
+		demu_unmap_guest_range(host_addr[i], guest_ram_size[i]);
+		DBG("Unmapped guest ram%u va 0x%lx\n", i, (unsigned long)host_addr[i]);
+		host_addr[i] = NULL;
+	}
+}
+
+void *demu_get_host_addr(uint64_t offset)
+{
+	void *addr;
+	unsigned int i;
+
+	for (i = 0; i < NR_GUEST_RAM; i++) {
+		if (!host_addr[i])
+			continue;
+
+		if (offset >= guest_ram_base[i] &&
+				offset < guest_ram_base[i] + guest_ram_size[i]) {
+			addr = host_addr[i] + (offset - guest_ram_base[i]);
+			/*DBG("Translate guest pa 0x%lx to host va 0x%lx\n",
+					offset, (unsigned long)addr);*/
+			return addr;
+		}
+	}
+
+	DBG("Cannot translate guest pa 0x%lx\n", offset);
+	assert(0);
+
+	return NULL;
+}
+#endif
 
 static demu_space_t *
 demu_find_space(demu_space_t *head, uint64_t addr)
@@ -364,6 +454,7 @@ demu_handle_ioreq(ioreq_t *ioreq)
         break;
 
     case IOREQ_TYPE_INVALIDATE:
+        /* TODO Remap the whole guest ram once it's memory layout is changed */
         DBG("NOT IMPLEMENTED (%02x)\n", ioreq->type);
         break;
 
@@ -438,6 +529,12 @@ demu_seq_next(void)
         break;
     }
 
+#ifdef MAP_IN_ADVANCE
+    case DEMU_SEQ_GUEST_RAM_MAPPED:
+        DBG(">GUEST_RAM_MAPPED\n");
+        break;
+#endif
+
     case DEMU_SEQ_DEVICE_INITIALIZED:
         DBG(">DEVICE_INITIALIZED\n");
         break;
@@ -465,8 +562,21 @@ demu_teardown(void)
         DBG("<DEVICE_INITIALIZED\n");
         device_teardown();
 
+#ifdef MAP_IN_ADVANCE
+        demu_state.seq = DEMU_SEQ_GUEST_RAM_MAPPED;
+    }
+
+    if (demu_state.seq == DEMU_SEQ_GUEST_RAM_MAPPED) {
+        DBG("<GUEST_RAM_MAPPED\n");
+
+        demu_unmap_guest_ram();
+
         demu_state.seq = DEMU_SEQ_PORTS_BOUND;
     }
+#else
+        demu_state.seq = DEMU_SEQ_PORTS_BOUND;
+    }
+#endif
 
     if (demu_state.seq >= DEMU_SEQ_PORTS_BOUND) {
         DBG("<EVTCHN_PORTS_BOUND\n");
@@ -705,9 +815,17 @@ demu_initialize(void)
 
     demu_seq_next();
 
-    rc = device_initialize(disk_image, image_count);
+#ifdef MAP_IN_ADVANCE
+    rc = demu_map_guest_ram();
     if (rc < 0)
         goto fail10;
+
+    demu_seq_next();
+#endif
+
+    rc = device_initialize(disk_image, image_count);
+    if (rc < 0)
+        goto fail11;
 
     demu_seq_next();
 
@@ -716,8 +834,13 @@ demu_initialize(void)
     assert(demu_state.seq == DEMU_SEQ_INITIALIZED);
     return 0;
 
+fail11:
+    DBG("fail11\n");
+
+#ifdef MAP_IN_ADVANCE
 fail10:
     DBG("fail10\n");
+#endif
 
 fail9:
     DBG("fail9\n");

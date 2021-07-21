@@ -67,7 +67,9 @@ void virtio_blk_complete(void *param, long len)
 	struct blk_dev *bdev = req->bdev;
 	int queueid = req->vq - bdev->vqs;
 	u8 *status;
+#ifndef MAP_IN_ADVANCE
 	int i;
+#endif
 
 	/* status */
 	status	= req->iov[req->out + req->in - 1].iov_base;
@@ -80,9 +82,11 @@ void virtio_blk_complete(void *param, long len)
 	if (virtio_queue__should_signal(&bdev->vqs[queueid]))
 		bdev->vdev.ops->signal_vq(req->kvm, &bdev->vdev, queueid);
 
+#ifndef MAP_IN_ADVANCE
 	/* Unmap all descriptors */
 	for (i = 0; i < req->out + req->in; i++)
 		demu_unmap_guest_range(req->iov[i].iov_base, req->iov[i].iov_len);
+#endif
 }
 
 static void virtio_blk_do_io_request(struct kvm *kvm, struct virt_queue *vq, struct blk_dev_req *req)
@@ -225,8 +229,12 @@ static int init_vq(struct kvm *kvm, void *dev, u32 vq, u32 page_size, u32 align,
 #if 0
 	p		= virtio_get_vq(kvm, queue->pfn, page_size);
 #endif
+#ifndef MAP_IN_ADVANCE
 	p = demu_map_guest_range((u64)pfn * page_size,
 			vring_size(VIRTIO_BLK_QUEUE_SIZE, align));
+#else
+	p = demu_get_host_addr((u64)pfn * page_size);
+#endif
 
 	vring_init(&queue->vring, VIRTIO_BLK_QUEUE_SIZE, p, align);
 	virtio_init_device_vq(&bdev->vdev, queue);
@@ -258,7 +266,9 @@ static int notify_vq(struct kvm *kvm, void *dev, u32 vq);
 static void exit_vq(struct kvm *kvm, void *dev, u32 vq)
 {
 	struct blk_dev *bdev = dev;
+#ifndef MAP_IN_ADVANCE
 	struct virt_queue *queue;
+#endif
 
 	if (vq != 0)
 		return;
@@ -270,9 +280,11 @@ static void exit_vq(struct kvm *kvm, void *dev, u32 vq)
 
 	disk_image__wait(bdev->disk);
 
+#ifndef MAP_IN_ADVANCE
 	queue = &bdev->vqs[vq];
 	demu_unmap_guest_range(queue->vring.desc,
 			vring_size(VIRTIO_BLK_QUEUE_SIZE, PAGE_SIZE));
+#endif
 }
 
 static int notify_vq(struct kvm *kvm, void *dev, u32 vq)

@@ -64,6 +64,10 @@ int demu_register_memory_space(uint64_t start, uint64_t size,
 
 void demu_deregister_memory_space(uint64_t start);
 
+#ifdef MAP_IN_ADVANCE
+void *demu_get_host_addr(uint64_t offset);
+#endif
+
 #endif  /* _DEMU_H */
 
 /*
