@@ -205,12 +205,32 @@ demu_unmap_guest_range(void *ptr, uint64_t size)
 #define NR_GUEST_RAM 2
 static void *host_addr[NR_GUEST_RAM];
 
-/*
- * TODO Properly recognize the guest memory layout, for now let's guess
- * the following (2GB low + 1GB high):
- */
-static uint64_t guest_ram_base[NR_GUEST_RAM] = {0x40000000UL, 0x200000000UL};
-static uint64_t guest_ram_size[NR_GUEST_RAM] = {0x80000000UL, 0x40000000UL};
+static uint64_t guest_ram_base[NR_GUEST_RAM];
+static uint64_t guest_ram_size[NR_GUEST_RAM];
+
+static int demu_init_guest_ram(void)
+{
+	uint64_t mem;
+
+	memset(guest_ram_base, 0, sizeof(guest_ram_base));
+	memset(guest_ram_size, 0, sizeof(guest_ram_size));
+
+	mem = xenstore_get_dom_mem(demu_state.xs_dev, demu_state.domid);
+	if (mem == 0)
+		return -1;
+
+	/* #define-s below located at include/public/arch-arm.h */
+	guest_ram_base[0] = GUEST_RAM0_BASE;
+	if (mem <= GUEST_RAM0_SIZE)
+		guest_ram_size[0] = mem;
+	else {
+		guest_ram_size[0] = GUEST_RAM0_SIZE;
+		guest_ram_base[1] = GUEST_RAM1_BASE;
+		guest_ram_size[1] = mem - GUEST_RAM0_SIZE;
+	}
+
+	return 0;
+}
 
 static int demu_map_guest_ram(void)
 {
@@ -816,6 +836,10 @@ demu_initialize(void)
     demu_seq_next();
 
 #ifdef MAP_IN_ADVANCE
+    rc = demu_init_guest_ram();
+    if (rc < 0)
+        goto fail10;
+
     rc = demu_map_guest_ram();
     if (rc < 0)
         goto fail10;

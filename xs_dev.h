@@ -47,6 +47,7 @@ struct xs_dev {
 
 struct xs_dev *xenstore_create(char *type);
 void xenstore_destroy(struct xs_dev *dev);
+uint64_t xenstore_get_dom_mem(struct xs_dev *dev, domid_t domid);
 int xenstore_connect_dom(struct xs_dev *dev, domid_t be_domid, domid_t fe_domid,
         int (*connected_cb)(void *data), void *data);
 void xenstore_disconnect_dom(struct xs_dev *dev);

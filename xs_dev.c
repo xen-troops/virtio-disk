@@ -169,6 +169,24 @@ void xenstore_disconnect_dom(struct xs_dev *dev)
     dev->fe_domid = 0;
 }
 
+uint64_t xenstore_get_dom_mem(struct xs_dev *dev, domid_t domid)
+{
+    char path[XEN_BUFSIZE];
+    char *memkb_str;
+    unsigned int len;
+    uint64_t memkb_val;
+
+    snprintf(path, sizeof(path), "/local/domain/%u/memory/static-max", domid);
+    memkb_str = xs_read(dev->xsh, XBT_NULL, path, &len);
+    if (!memkb_str)
+        return 0;
+
+    memkb_val = strtoull(memkb_str, NULL, 10);
+    free(memkb_str);
+
+    return memkb_val * 1024;
+}
+
 int xenstore_connect_dom(struct xs_dev *dev, domid_t be_domid, domid_t fe_domid,
         int (*connected_cb)(void *data), void *data)
 {
