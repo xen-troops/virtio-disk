@@ -36,7 +36,7 @@ ifeq ($(shell uname),Linux)
 LDLIBS := -lutil -lrt
 endif
 
-LDLIBS += -lxenstore -lpthread \
+LDLIBS += -lxenstore -lxenctrl -lpthread \
 	-lxenforeignmemory -lxenevtchn -lxendevicemodel #-laio
 
 # Get gcc to generate the dependencies for us.
