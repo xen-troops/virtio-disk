@@ -35,6 +35,7 @@ struct xs_dev {
     domid_t be_domid;
     domid_t fe_domid;
     const char *type;
+    const char *devid_str;
     int devid;
     char be[XEN_BUFSIZE];
     char path[XEN_BUFSIZE];
@@ -45,7 +46,7 @@ struct xs_dev {
     void *data;
 };
 
-struct xs_dev *xenstore_create(char *type);
+struct xs_dev *xenstore_create(char *type, char *devid_str);
 void xenstore_destroy(struct xs_dev *dev);
 uint64_t xenstore_get_dom_mem(struct xs_dev *dev, domid_t domid);
 int xenstore_connect_dom(struct xs_dev *dev, domid_t be_domid, domid_t fe_domid,

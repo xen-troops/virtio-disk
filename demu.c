@@ -976,6 +976,28 @@ main(int argc, char **argv, char **envp)
     sigset_t        block;
     int             rc;
     int             efd, xfd;
+    char            *devid_str = NULL;
+    int             opt;
+    const struct option lopts[] =
+    {
+        {"help", no_argument, NULL, 'h'},
+        {"devid", optional_argument, NULL, 'd'},
+        {NULL, 0, NULL, 0},
+    };
+
+    while ((opt = getopt_long(argc, argv, "hd:", lopts, NULL)) != -1) {
+        switch (opt) {
+            case 'd':
+                devid_str = optarg;
+                break;
+
+            case 'h':
+                /* Fallthough */
+            default:
+                printf("Usage: %s [-d <devid>]\n", argv[0]);
+                return 0;
+        }
+    }
 
     sigfillset(&block);
 
@@ -996,7 +1018,7 @@ main(int argc, char **argv, char **envp)
 
     sigprocmask(SIG_BLOCK, &block, NULL);
 
-    demu_state.xs_dev = xenstore_create(XS_DISK_TYPE);
+    demu_state.xs_dev = xenstore_create(XS_DISK_TYPE, devid_str);
     if (demu_state.xs_dev == NULL) {
         fprintf(stderr, "failed to create xenstore instance\n");
         exit(1);

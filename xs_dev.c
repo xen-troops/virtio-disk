@@ -267,7 +267,7 @@ err:
     return -1;
 }
 
-struct xs_dev *xenstore_create(char *type)
+struct xs_dev *xenstore_create(char *type, char *devid_str)
 {
     struct xs_dev *dev;
 
@@ -283,6 +283,7 @@ struct xs_dev *xenstore_create(char *type)
     }
 
     dev->type = type;
+    dev->devid_str = devid_str;
     snprintf(dev->path, sizeof(dev->path), "backend/%s", dev->type);
 
     return dev;
@@ -331,6 +332,13 @@ static bool xenstore_check_fe_exists(struct xs_dev *dev, domid_t domid)
     char **devid;
     unsigned int num;
 
+    /*
+     * TODO: We need some sign that all devid subdirs are already written to
+     * Xenstore, so it's time to parse them. This delay although works, doesn't
+     * guarantee that.
+     */
+    msleep(200);
+
     snprintf(path, sizeof(path), "backend/%s/%d",
             dev->type, domid);
 
@@ -340,8 +348,30 @@ static bool xenstore_check_fe_exists(struct xs_dev *dev, domid_t domid)
 
     if (num > 1)
         pr_warning("got %u devices, but only single device is supported\n", num);
-    dev->devid = atoi(devid[0]);
-    free(devid);
+
+    /*
+     * Always choose the first devid if devid_str is not set. Otherwise
+     * make sure that specified devid_str is present.
+     */
+    if (!dev->devid_str) {
+        dev->devid = atoi(devid[0]);
+        free(devid);
+    } else {
+        unsigned int i;
+
+        for (i = 0; i < num; i++) {
+            if (!strcmp(devid[i], dev->devid_str)) {
+                dev->devid = atoi(devid[i]);
+                break;
+            }
+        }
+        free(devid);
+
+        if (i == num) {
+            pr_err("devid %s is not found\n", dev->devid_str);
+            return false;
+        }
+    }
 
     snprintf(path, sizeof(path), "/local/domain/%u/device/%s/%d",
             domid, dev->type, dev->devid);
