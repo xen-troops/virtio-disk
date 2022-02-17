@@ -7,6 +7,7 @@
 #include <linux/virtio_pci.h>
 
 #include <linux/types.h>
+#include <linux/compiler.h>
 #include <linux/virtio_config.h>
 #include <sys/uio.h>
 #include <xenctrl.h>
@@ -34,6 +35,7 @@
 	 VIRTIO_CONFIG_S_DRIVER |	\
 	 VIRTIO_CONFIG_S_DRIVER_OK |	\
 	 VIRTIO_CONFIG_S_FEATURES_OK |	\
+	 VIRTIO_CONFIG_S_NEEDS_RESET |	\
 	 VIRTIO_CONFIG_S_FAILED)
 
 /* Kvmtool status bits */
@@ -41,10 +43,33 @@
 #define VIRTIO__STATUS_START		(1 << 8)
 /* Stop the device */
 #define VIRTIO__STATUS_STOP		(1 << 9)
+/* Swap config endianess */
+#define VIRTIO__STATUS_SWAB		(1 << 10)
+
+struct vring_addr {
+	bool			legacy;
+	union {
+		/* Legacy description */
+		struct {
+			u32	pfn;
+			u32	align;
+			u32	pgsize;
+		};
+		/* Modern description */
+		struct {
+			u32	desc_lo;
+			u32	desc_hi;
+			u32	avail_lo;
+			u32	avail_hi;
+			u32	used_lo;
+			u32	used_hi;
+		};
+	};
+};
 
 struct virt_queue {
 	struct vring	vring;
-	u32		pfn;
+	struct vring_addr vring_addr;
 	/* The last_avail_idx field is an index to ->ring of struct vring_avail.
 	   It's where we assume the next request index is at.  */
 	u16		last_avail_idx;
@@ -169,10 +194,13 @@ int virtio__get_dev_specific_field(int offset, bool msix, u32 *config_off);
 
 enum virtio_trans {
 	VIRTIO_PCI,
+	VIRTIO_PCI_LEGACY,
 	VIRTIO_MMIO,
+	VIRTIO_MMIO_LEGACY,
 };
 
 struct virtio_device {
+	bool			legacy;
 	bool			use_vhost;
 	void			*virtio;
 	struct virtio_ops	*ops;
@@ -184,10 +212,8 @@ struct virtio_device {
 struct virtio_ops {
 	u8 *(*get_config)(struct kvm *kvm, void *dev);
 	u32 (*get_host_features)(struct kvm *kvm, void *dev);
-	void (*set_guest_features)(struct kvm *kvm, void *dev, u32 features);
 	int (*get_vq_count)(struct kvm *kvm, void *dev);
-	int (*init_vq)(struct kvm *kvm, void *dev, u32 vq, u32 page_size,
-		       u32 align, u32 pfn);
+	int (*init_vq)(struct kvm *kvm, void *dev, u32 vq);
 	void (*exit_vq)(struct kvm *kvm, void *dev, u32 vq);
 	int (*notify_vq)(struct kvm *kvm, void *dev, u32 vq);
 	struct virt_queue *(*get_vq)(struct kvm *kvm, void *dev, u32 vq);
@@ -204,28 +230,18 @@ struct virtio_ops {
 	int (*reset)(struct kvm *kvm, struct virtio_device *vdev);
 };
 
-int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
-		struct virtio_ops *ops, enum virtio_trans trans,
-		int device_id, int subsys_id, int class, u32 addr, u8 irq);
+int __must_check virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
+			     struct virtio_ops *ops, enum virtio_trans trans,
+			     int device_id, int subsys_id, int class, u32 addr, u8 irq);
 const char* virtio_trans_name(enum virtio_trans trans);
-
-#if 0
-static inline void *virtio_get_vq(struct kvm *kvm, u32 pfn, u32 page_size)
-{
-	return guest_flat_to_host(kvm, (u64)pfn * page_size);
-}
-#endif
-
-static inline void virtio_init_device_vq(struct virtio_device *vdev,
-					 struct virt_queue *vq)
-{
-	vq->endian = vdev->endian;
-	vq->use_event_idx = (vdev->features & VIRTIO_RING_F_EVENT_IDX);
-	vq->enabled = true;
-}
-
+void virtio_init_device_vq(struct kvm *kvm, struct virtio_device *vdev,
+			   struct virt_queue *vq, size_t nr_descs);
 void virtio_exit_vq(struct kvm *kvm, struct virtio_device *vdev, void *dev,
 		    int num);
+bool virtio_read_config(struct kvm *kvm, struct virtio_device *vdev, void *dev,
+			unsigned long offset, void *data, size_t size);
+bool virtio_write_config(struct kvm *kvm, struct virtio_device *vdev, void *dev,
+			 unsigned long offset, void *data, size_t size);
 void virtio_set_guest_features(struct kvm *kvm, struct virtio_device *vdev,
 			       void *dev, u32 features);
 void virtio_notify_status(struct kvm *kvm, struct virtio_device *vdev,

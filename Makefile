@@ -10,6 +10,8 @@ OBJS :=	device.o \
 OBJS	+= virtio/blk.o
 OBJS	+= virtio/core.o
 OBJS	+= virtio/mmio.o
+OBJS	+= virtio/mmio-legacy.o
+OBJS	+= virtio/mmio-modern.o
 
 OBJS	+= disk/core.o
 OBJS	+= disk/blk.o

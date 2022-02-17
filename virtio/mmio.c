@@ -14,17 +14,6 @@
  * virtio-blk can operate without it, not sure about other virtio backends.
  */
 
-
-static inline u32 ioport__read32(u32 *data)
-{
-	return le32_to_cpu(*data);
-}
-
-static inline void ioport__write32(u32 *data, u32 value)
-{
-	*data = cpu_to_le32(value);
-}
-
 static void kvm__irq_trigger(struct kvm *kvm, int irq)
 {
 	demu_set_irq(irq, VIRTIO_IRQ_HIGH);
@@ -39,8 +28,8 @@ static void virtio_mmio_ioevent_callback(struct kvm *kvm, void *param)
 	ioeventfd->vdev->ops->notify_vq(kvm, vmmio->dev, ioeventfd->vq);
 }
 
-static int virtio_mmio_init_ioeventfd(struct kvm *kvm,
-				      struct virtio_device *vdev, u32 vq)
+int virtio_mmio_init_ioeventfd(struct kvm *kvm, struct virtio_device *vdev,
+			       u32 vq)
 {
 	struct virtio_mmio *vmmio = vdev->virtio;
 	struct ioevent ioevent;
@@ -90,8 +79,21 @@ int virtio_mmio_signal_vq(struct kvm *kvm, struct virtio_device *vdev, u32 vq)
 	return 0;
 }
 
-static void virtio_mmio_exit_vq(struct kvm *kvm, struct virtio_device *vdev,
-				int vq)
+int virtio_mmio_init_vq(struct kvm *kvm, struct virtio_device *vdev, int vq)
+{
+	struct virtio_mmio *vmmio = vdev->virtio;
+
+#if 0
+	int ret = virtio_mmio_init_ioeventfd(vmmio->kvm, vdev, vq);
+	if (ret) {
+		pr_err("couldn't add ioeventfd for vq %d: %d", vq, ret);
+		return ret;
+	}
+#endif
+	return vdev->ops->init_vq(vmmio->kvm, vmmio->dev, vq);
+}
+
+void virtio_mmio_exit_vq(struct kvm *kvm, struct virtio_device *vdev, int vq)
 {
 	struct virtio_mmio *vmmio = vdev->virtio;
 
@@ -111,155 +113,24 @@ int virtio_mmio_signal_config(struct kvm *kvm, struct virtio_device *vdev)
 	return 0;
 }
 
-static void virtio_mmio_device_specific(
-					u64 addr, u8 *data, u32 len,
-					u8 is_write, struct virtio_device *vdev)
+void virtio_mmio_device_specific(u64 addr, u8 *data,
+				 u32 len, u8 is_write,
+				 struct virtio_device *vdev)
 {
 	struct virtio_mmio *vmmio = vdev->virtio;
-	u32 i;
-
-	for (i = 0; i < len; i++) {
-		if (is_write)
-			vdev->ops->get_config(vmmio->kvm, vmmio->dev)[addr + i] =
-					      *(u8 *)data + i;
-		else
-			data[i] = vdev->ops->get_config(vmmio->kvm,
-							vmmio->dev)[addr + i];
-	}
-}
-
-static void virtio_mmio_config_in(
-				  u64 addr, void *data, u32 len,
-				  struct virtio_device *vdev)
-{
-	struct virtio_mmio *vmmio = vdev->virtio;
-	struct virt_queue *vq;
-	u32 val = 0;
-
-	switch (addr) {
-	case VIRTIO_MMIO_MAGIC_VALUE:
-	case VIRTIO_MMIO_VERSION:
-	case VIRTIO_MMIO_DEVICE_ID:
-	case VIRTIO_MMIO_VENDOR_ID:
-	case VIRTIO_MMIO_STATUS:
-	case VIRTIO_MMIO_INTERRUPT_STATUS:
-		ioport__write32(data, *(u32 *)(((void *)&vmmio->hdr) + addr));
-		break;
-	case VIRTIO_MMIO_HOST_FEATURES:
-		if (vmmio->hdr.host_features_sel == 0)
-			val = vdev->ops->get_host_features(vmmio->kvm,
-							   vmmio->dev);
-		ioport__write32(data, val);
-		break;
-	case VIRTIO_MMIO_QUEUE_PFN:
-		vq = vdev->ops->get_vq(vmmio->kvm, vmmio->dev,
-				       vmmio->hdr.queue_sel);
-		ioport__write32(data, vq->pfn);
-		break;
-	case VIRTIO_MMIO_QUEUE_NUM_MAX:
-		val = vdev->ops->get_size_vq(vmmio->kvm, vmmio->dev,
-					     vmmio->hdr.queue_sel);
-		ioport__write32(data, val);
-		break;
-	default:
-		break;
-	}
-}
-
-static void virtio_mmio_config_out(
-				   u64 addr, void *data, u32 len,
-				   struct virtio_device *vdev)
-{
-	struct virtio_mmio *vmmio = vdev->virtio;
-	struct kvm *kvm = vmmio->kvm;
-	u32 val = 0;
-
-	switch (addr) {
-	case VIRTIO_MMIO_HOST_FEATURES_SEL:
-	case VIRTIO_MMIO_GUEST_FEATURES_SEL:
-	case VIRTIO_MMIO_QUEUE_SEL:
-		val = ioport__read32(data);
-		*(u32 *)(((void *)&vmmio->hdr) + addr) = val;
-		break;
-	case VIRTIO_MMIO_STATUS:
-		vmmio->hdr.status = ioport__read32(data);
-		if (!vmmio->hdr.status) /* Sample endianness on reset */
-			vdev->endian = VIRTIO_ENDIAN_HOST;
-		virtio_notify_status(kvm, vdev, vmmio->dev, vmmio->hdr.status);
-		break;
-	case VIRTIO_MMIO_GUEST_FEATURES:
-		if (vmmio->hdr.guest_features_sel == 0) {
-			val = ioport__read32(data);
-			virtio_set_guest_features(vmmio->kvm, vdev,
-						  vmmio->dev, val);
-		}
-		break;
-	case VIRTIO_MMIO_GUEST_PAGE_SIZE:
-		val = ioport__read32(data);
-		vmmio->hdr.guest_page_size = val;
-		break;
-	case VIRTIO_MMIO_QUEUE_NUM:
-		val = ioport__read32(data);
-		vmmio->hdr.queue_num = val;
-		vdev->ops->set_size_vq(vmmio->kvm, vmmio->dev,
-				       vmmio->hdr.queue_sel, val);
-		break;
-	case VIRTIO_MMIO_QUEUE_ALIGN:
-		val = ioport__read32(data);
-		vmmio->hdr.queue_align = val;
-		break;
-	case VIRTIO_MMIO_QUEUE_PFN:
-		val = ioport__read32(data);
-		if (val) {
-#if 0
-			virtio_mmio_init_ioeventfd(vmmio->kvm, vdev,
-						   vmmio->hdr.queue_sel);
-#endif
-			vdev->ops->init_vq(vmmio->kvm, vmmio->dev,
-					   vmmio->hdr.queue_sel,
-					   vmmio->hdr.guest_page_size,
-					   vmmio->hdr.queue_align,
-					   val);
-		} else {
-			virtio_mmio_exit_vq(kvm, vdev, vmmio->hdr.queue_sel);
-		}
-		break;
-	case VIRTIO_MMIO_QUEUE_NOTIFY:
-		val = ioport__read32(data);
-		vdev->ops->notify_vq(vmmio->kvm, vmmio->dev, val);
-		break;
-	case VIRTIO_MMIO_INTERRUPT_ACK:
-		val = ioport__read32(data);
-		vmmio->hdr.interrupt_state &= ~val;
-		break;
-	default:
-		break;
-	};
-}
-
-static void virtio_mmio_mmio_callback(
-				      u64 addr, u8 *data, u32 len,
-				      u8 is_write, void *ptr)
-{
-	struct virtio_device *vdev = ptr;
-	struct virtio_mmio *vmmio = vdev->virtio;
-	u32 offset = addr - vmmio->addr;
-
-	if (offset >= VIRTIO_MMIO_CONFIG) {
-		offset -= VIRTIO_MMIO_CONFIG;
-		virtio_mmio_device_specific(offset, data, len, is_write, ptr);
-		return;
-	}
 
 	if (is_write)
-		virtio_mmio_config_out(offset, data, len, ptr);
+		virtio_write_config(vmmio->kvm, vdev, vmmio->dev, addr, data,
+				    len);
 	else
-		virtio_mmio_config_in(offset, data, len, ptr);
+		virtio_read_config(vmmio->kvm, vdev, vmmio->dev, addr, data,
+				   len);
 }
 
 int virtio_mmio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		     int device_id, int subsys_id, int class, u32 addr, u8 irq)
 {
+	bool legacy = vdev->legacy;
 	struct virtio_mmio *vmmio = vdev->virtio;
 	int r;
 
@@ -268,14 +139,18 @@ int virtio_mmio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 	vmmio->kvm	= kvm;
 	vmmio->dev	= dev;
 
+	if (!legacy)
+		vdev->endian = VIRTIO_ENDIAN_LE;
+
 	r = demu_register_memory_space(vmmio->addr, VIRTIO_MMIO_IO_SIZE,
-			virtio_mmio_mmio_callback, vdev);
+			legacy ? virtio_mmio_legacy_callback :
+			virtio_mmio_modern_callback, vdev);
 	if (r < 0)
 		return r;
 
 	vmmio->hdr = (struct virtio_mmio_hdr) {
 		.magic		= {'v', 'i', 'r', 't'},
-		.version	= 1,
+		.version	= legacy ? 1 : 2,
 		.device_id	= subsys_id,
 		.vendor_id	= 0x4d564b4c , /* 'LKVM' */
 		.queue_num_max	= 256,

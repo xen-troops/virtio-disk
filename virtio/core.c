@@ -13,9 +13,9 @@
 
 const char* virtio_trans_name(enum virtio_trans trans)
 {
-	if (trans == VIRTIO_PCI)
+	if (trans == VIRTIO_PCI || trans == VIRTIO_PCI_LEGACY)
 		return "pci";
-	else if (trans == VIRTIO_MMIO)
+	else if (trans == VIRTIO_MMIO || trans == VIRTIO_MMIO_LEGACY)
 		return "mmio";
 	return "unknown";
 }
@@ -32,13 +32,6 @@ void virt_queue__used_idx_advance(struct virt_queue *queue, u16 jump)
 	xen_wmb();
 	idx += jump;
 	queue->vring.used->idx = virtio_host_to_guest_u16(queue, idx);
-
-	/*
-	 * Use wmb to assure used idx has been increased before we signal the guest.
-	 * Without a wmb here the guest may ignore the queue since it won't see
-	 * an updated idx.
-	 */
-	xen_wmb();
 }
 
 struct vring_used_elem *
@@ -139,7 +132,7 @@ u16 virt_queue__get_head_iov(struct virt_queue *vq, struct iovec iov[], u16 *out
 	} while ((idx = next_desc(vq, desc, idx, max)) != max);
 
 #ifndef MAP_IN_ADVANCE
-	if (mapped)
+	if (desc && mapped)
 		demu_unmap_guest_range(desc, mapped);
 #endif
 
@@ -197,13 +190,68 @@ u16 virt_queue__get_inout_iov(struct kvm *kvm, struct virt_queue *queue,
 	return head;
 }
 
+void virtio_init_device_vq(struct kvm *kvm, struct virtio_device *vdev,
+			   struct virt_queue *vq, size_t nr_descs)
+{
+	struct vring_addr *addr = &vq->vring_addr;
+
+	vq->endian		= vdev->endian;
+	vq->use_event_idx	= (vdev->features & VIRTIO_RING_F_EVENT_IDX);
+	vq->enabled		= true;
+
+	if (addr->legacy) {
+		unsigned long base = (u64)addr->pfn * addr->pgsize;
+#ifndef MAP_IN_ADVANCE
+		void *p = demu_map_guest_range(base, vring_size(nr_descs, addr->align));
+#else
+		void *p = demu_get_host_addr(base);
+#endif
+		BUG_ON(!p);
+
+		vring_init(&vq->vring, nr_descs, p, addr->align);
+	} else {
+		u64 desc = (u64)addr->desc_hi << 32 | addr->desc_lo;
+		u64 avail = (u64)addr->avail_hi << 32 | addr->avail_lo;
+		u64 used = (u64)addr->used_hi << 32 | addr->used_lo;
+
+		vq->vring = (struct vring) {
+#ifndef MAP_IN_ADVANCE
+			.desc	= demu_map_guest_range(desc, PAGE_SIZE),
+			.used	= demu_map_guest_range(used, PAGE_SIZE),
+			.avail	= demu_map_guest_range(avail, PAGE_SIZE),
+#else
+			.desc	= demu_get_host_addr(desc),
+			.used	= demu_get_host_addr(used),
+			.avail	= demu_get_host_addr(avail),
+#endif
+			.num	= nr_descs,
+		};
+		BUG_ON(!vq->vring.desc);
+		BUG_ON(!vq->vring.used);
+		BUG_ON(!vq->vring.avail);
+	}
+}
+
 void virtio_exit_vq(struct kvm *kvm, struct virtio_device *vdev,
 			   void *dev, int num)
 {
 	struct virt_queue *vq = vdev->ops->get_vq(kvm, dev, num);
 
-	if (vq->enabled && vdev->ops->exit_vq)
-		vdev->ops->exit_vq(kvm, dev, num);
+	if (vq->enabled) {
+		if (vdev->ops->exit_vq)
+			vdev->ops->exit_vq(kvm, dev, num);
+
+#ifndef MAP_IN_ADVANCE
+		if (vq->vring_addr.legacy)
+			demu_unmap_guest_range(vq->vring.desc,
+					vring_size(vq->vring.num, vq->vring_addr.align));
+		else {
+			demu_unmap_guest_range(vq->vring.desc, PAGE_SIZE);
+			demu_unmap_guest_range(vq->vring.used, PAGE_SIZE);
+			demu_unmap_guest_range(vq->vring.avail, PAGE_SIZE);
+		}
+#endif
+	}
 	memset(vq, 0, sizeof(*vq));
 }
 
@@ -224,6 +272,14 @@ int virtio__get_dev_specific_field(int offset, bool msix, u32 *config_off)
 bool virtio_queue__should_signal(struct virt_queue *vq)
 {
 	u16 old_idx, new_idx, event_idx;
+
+	/*
+	 * Use mb to assure used idx has been increased before we signal the
+	 * guest, and we don't read a stale value for used_event. Without a mb
+	 * here we might not send a notification that we need to send, or the
+	 * guest may ignore the queue since it won't see an updated idx.
+	 */
+	xen_mb();
 
 	if (!vq->use_event_idx) {
 		/*
@@ -252,7 +308,6 @@ void virtio_set_guest_features(struct kvm *kvm, struct virtio_device *vdev,
 	/* TODO: fail negotiation if features & ~host_features */
 
 	vdev->features = features;
-	vdev->ops->set_guest_features(kvm, dev, features);
 }
 
 void virtio_notify_status(struct kvm *kvm, struct virtio_device *vdev,
@@ -281,8 +336,58 @@ void virtio_notify_status(struct kvm *kvm, struct virtio_device *vdev,
 			vdev->ops->reset(kvm, vdev);
 	}
 
+	/* On first reset, swap device-specific config endianess. */
+	if (!status && !(vdev->status & VIRTIO__STATUS_SWAB)) {
+		vdev->status |= VIRTIO__STATUS_SWAB;
+		ext_status |= VIRTIO__STATUS_SWAB;
+	}
+
 	if (vdev->ops->notify_status)
 		vdev->ops->notify_status(kvm, dev, ext_status);
+}
+
+bool virtio_read_config(struct kvm *kvm, struct virtio_device *vdev, void *dev,
+			unsigned long offset, void *data, size_t size)
+{
+	void *config = vdev->ops->get_config(kvm, dev) + offset;
+
+	switch (size) {
+	case 1:
+		*(u8 *)data = *(u8 *)config;
+		break;
+	case 2:
+		*(u16 *)data = *(u16 *)config;
+		break;
+	case 4:
+		*(u32 *)data = *(u32 *)config;
+		break;
+	default:
+		return false;
+	}
+
+	return true;
+}
+
+bool virtio_write_config(struct kvm *kvm, struct virtio_device *vdev, void *dev,
+			unsigned long offset, void *data, size_t size)
+{
+	void *config = vdev->ops->get_config(kvm, dev) + offset;
+
+	switch (size) {
+	case 1:
+		*(u8 *)config = *(u8 *)data;
+		break;
+	case 2:
+		*(u16 *)config = *(u16 *)data;
+		break;
+	case 4:
+		*(u32 *)config = *(u32 *)data;
+		break;
+	default:
+		return false;
+	}
+
+	return true;
 }
 
 int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
@@ -292,7 +397,13 @@ int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 	void *virtio;
 	int r;
 
+	if (!vdev->endian)
+		vdev->endian = VIRTIO_ENDIAN_HOST;
+
 	switch (trans) {
+	case VIRTIO_MMIO_LEGACY:
+		vdev->legacy			= true;
+		/* fall through */
 	case VIRTIO_MMIO:
 		virtio = calloc(sizeof(struct virtio_mmio), 1);
 		if (!virtio)

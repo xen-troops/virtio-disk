@@ -44,7 +44,6 @@ struct blk_dev {
 	struct virtio_device		vdev;
 	struct virtio_blk_config	blk_config;
 	struct disk_image		*disk;
-	u32				features;
 
 	struct virt_queue		vqs[NUM_VIRT_QUEUES];
 	struct blk_dev_req		reqs[VIRTIO_BLK_QUEUE_SIZE];
@@ -54,9 +53,6 @@ struct blk_dev {
 	int				io_done;
 
 	struct kvm			*kvm;
-
-	u32	inval_cnt;
-	int	index;
 };
 
 static LIST_HEAD(bdevs);
@@ -67,9 +63,6 @@ void virtio_blk_complete(void *param, long len)
 	struct blk_dev *bdev = req->bdev;
 	int queueid = req->vq - bdev->vqs;
 	u8 *status;
-#ifndef MAP_IN_ADVANCE
-	int i;
-#endif
 
 	/* status */
 	status	= req->iov[req->out + req->in - 1].iov_base;
@@ -84,7 +77,7 @@ void virtio_blk_complete(void *param, long len)
 
 #ifndef MAP_IN_ADVANCE
 	/* Unmap all descriptors */
-	for (i = 0; i < req->out + req->in; i++)
+	for (int i = 0; i < req->out + req->in; i++)
 		demu_unmap_guest_range(req->iov[i].iov_base, req->iov[i].iov_len);
 #endif
 }
@@ -167,15 +160,20 @@ static u32 get_host_features(struct kvm *kvm, void *dev)
 		| 1UL << VIRTIO_BLK_F_FLUSH
 		| 1UL << VIRTIO_RING_F_EVENT_IDX
 		| 1UL << VIRTIO_RING_F_INDIRECT_DESC
+/* XXX */
+#if 0
+		| 1UL << VIRTIO_F_ANY_LAYOUT
+#endif
 		| (bdev->disk->readonly ? 1UL << VIRTIO_BLK_F_RO : 0);
 }
 
-static void set_guest_features(struct kvm *kvm, void *dev, u32 features)
+static void notify_status(struct kvm *kvm, void *dev, u32 status)
 {
 	struct blk_dev *bdev = dev;
 	struct virtio_blk_config *conf = &bdev->blk_config;
 
-	bdev->features = features;
+	if (!(status & VIRTIO__STATUS_SWAB))
+		return;
 
 	conf->capacity = virtio_host_to_guest_u64(&bdev->vdev, conf->capacity);
 	conf->size_max = virtio_host_to_guest_u32(&bdev->vdev, conf->size_max);
@@ -188,10 +186,6 @@ static void set_guest_features(struct kvm *kvm, void *dev, u32 features)
 	conf->blk_size = virtio_host_to_guest_u32(&bdev->vdev, conf->blk_size);
 	conf->min_io_size = virtio_host_to_guest_u16(&bdev->vdev, conf->min_io_size);
 	conf->opt_io_size = virtio_host_to_guest_u32(&bdev->vdev, conf->opt_io_size);
-}
-
-static void notify_status(struct kvm *kvm, void *dev, u32 status)
-{
 }
 
 static void *virtio_blk_thread(void *dev)
@@ -213,31 +207,13 @@ static void *virtio_blk_thread(void *dev)
 	return NULL;
 }
 
-static int init_vq(struct kvm *kvm, void *dev, u32 vq, u32 page_size, u32 align,
-		   u32 pfn)
+static int init_vq(struct kvm *kvm, void *dev, u32 vq)
 {
 	unsigned int i;
 	struct blk_dev *bdev = dev;
-	struct virt_queue *queue;
-	void *p;
 
-	BUG_ON(align != PAGE_SIZE);
-	BUG_ON(page_size != PAGE_SIZE);
-
-	queue		= &bdev->vqs[vq];
-	queue->pfn	= pfn;
-#if 0
-	p		= virtio_get_vq(kvm, queue->pfn, page_size);
-#endif
-#ifndef MAP_IN_ADVANCE
-	p = demu_map_guest_range((u64)pfn * page_size,
-			vring_size(VIRTIO_BLK_QUEUE_SIZE, align));
-#else
-	p = demu_get_host_addr((u64)pfn * page_size);
-#endif
-
-	vring_init(&queue->vring, VIRTIO_BLK_QUEUE_SIZE, p, align);
-	virtio_init_device_vq(&bdev->vdev, queue);
+	virtio_init_device_vq(kvm, &bdev->vdev, &bdev->vqs[vq],
+			      VIRTIO_BLK_QUEUE_SIZE);
 
 	if (vq != 0)
 		return 0;
@@ -266,9 +242,6 @@ static int notify_vq(struct kvm *kvm, void *dev, u32 vq);
 static void exit_vq(struct kvm *kvm, void *dev, u32 vq)
 {
 	struct blk_dev *bdev = dev;
-#ifndef MAP_IN_ADVANCE
-	struct virt_queue *queue;
-#endif
 
 	if (vq != 0)
 		return;
@@ -279,12 +252,6 @@ static void exit_vq(struct kvm *kvm, void *dev, u32 vq)
 	close(bdev->io_efd);
 
 	disk_image__wait(bdev->disk);
-
-#ifndef MAP_IN_ADVANCE
-	queue = &bdev->vqs[vq];
-	demu_unmap_guest_range(queue->vring.desc,
-			vring_size(VIRTIO_BLK_QUEUE_SIZE, PAGE_SIZE));
-#endif
 }
 
 static int notify_vq(struct kvm *kvm, void *dev, u32 vq)
@@ -327,7 +294,6 @@ static int get_vq_count(struct kvm *kvm, void *dev)
 static struct virtio_ops blk_dev_virtio_ops = {
 	.get_config		= get_config,
 	.get_host_features	= get_host_features,
-	.set_guest_features	= set_guest_features,
 	.get_vq_count		= get_vq_count,
 	.init_vq		= init_vq,
 	.exit_vq		= exit_vq,
@@ -338,7 +304,7 @@ static struct virtio_ops blk_dev_virtio_ops = {
 	.set_size_vq		= set_size_vq,
 };
 
-static int virtio_blk__init_one(struct kvm *kvm, struct disk_image *disk, int index)
+static int virtio_blk__init_one(struct kvm *kvm, struct disk_image *disk)
 {
 	struct blk_dev *bdev;
 	int r;
@@ -357,7 +323,6 @@ static int virtio_blk__init_one(struct kvm *kvm, struct disk_image *disk, int in
 			.seg_max	= DISK_SEG_MAX,
 		},
 		.kvm			= kvm,
-		.index			= index,
 	};
 
 	list_add_tail(&bdev->list, &bdevs);
@@ -389,7 +354,7 @@ int virtio_blk__init(struct kvm *kvm)
 	for (i = 0; i < kvm->nr_disks; i++) {
 		if (kvm->disks[i]->wwpn)
 			continue;
-		r = virtio_blk__init_one(kvm, kvm->disks[i], i);
+		r = virtio_blk__init_one(kvm, kvm->disks[i]);
 		if (r < 0)
 			goto cleanup;
 	}
