@@ -74,6 +74,8 @@
 static struct disk_image_params disk_image[MAX_DISK_IMAGES];
 static u8 image_count;
 
+bool virtio_legacy = false;
+
 /*
  * XXX:
  * 1. This file should be refactored heavily.
@@ -982,19 +984,24 @@ main(int argc, char **argv, char **envp)
     {
         {"help", no_argument, NULL, 'h'},
         {"devid", optional_argument, NULL, 'd'},
+        {"legacy", no_argument, NULL, 'l'},
         {NULL, 0, NULL, 0},
     };
 
-    while ((opt = getopt_long(argc, argv, "hd:", lopts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "hd:l", lopts, NULL)) != -1) {
         switch (opt) {
             case 'd':
                 devid_str = optarg;
                 break;
 
+            case 'l':
+                virtio_legacy = true;
+                break;
+
             case 'h':
                 /* Fallthough */
             default:
-                printf("Usage: %s [-d <devid>]\n", argv[0]);
+                printf("Usage: %s [-d <devid>] [-l (virtio_legacy)]\n", argv[0]);
                 return 0;
         }
     }
