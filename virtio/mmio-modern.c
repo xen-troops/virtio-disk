@@ -11,7 +11,8 @@ static void virtio_mmio_config_in(
 				  struct virtio_device *vdev)
 {
 	struct virtio_mmio *vmmio = vdev->virtio;
-	u64 features = 1ULL << VIRTIO_F_VERSION_1;
+	u64 features = 1ULL << VIRTIO_F_VERSION_1 |
+				   1ULL << VIRTIO_F_ACCESS_PLATFORM;
 	u32 val = 0;
 
 	switch (addr) {
