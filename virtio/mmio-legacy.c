@@ -100,10 +100,11 @@ static void virtio_mmio_config_out(
 		vq->vring_addr.align = val;
 		break;
 	case VIRTIO_MMIO_QUEUE_PFN:
+		val = ioport__read32(data);
 		if (val) {
 			vq = vmmio_selected_vq(vdev, vmmio);
 			vq->vring_addr.legacy = true;
-			vq->vring_addr.pfn = ioport__read32(data);
+			vq->vring_addr.pfn = val;
 			vq->vring_addr.pgsize = vmmio->hdr.guest_page_size;
 			virtio_mmio_init_vq(kvm, vdev, vmmio->hdr.queue_sel);
 		} else {
