@@ -70,18 +70,18 @@ void virtio_blk_complete(void *param, long len)
 	status	= req->iov[req->out + req->in - 1].iov_base;
 	*status	= (len < 0) ? VIRTIO_BLK_S_IOERR : VIRTIO_BLK_S_OK;
 
+#ifndef MAP_IN_ADVANCE
+	/* Unmap all descriptors */
+	for (int i = 0; i < req->out + req->in; i++)
+		demu_unmap_guest_range(req->iov[i].iov_base, req->iov[i].iov_len);
+#endif
+
 	mutex_lock(&bdev->mutex);
 	virt_queue__set_used_elem(req->vq, req->head, len);
 	mutex_unlock(&bdev->mutex);
 
 	if (virtio_queue__should_signal(&bdev->vqs[queueid]))
 		bdev->vdev.ops->signal_vq(req->kvm, &bdev->vdev, queueid);
-
-#ifndef MAP_IN_ADVANCE
-	/* Unmap all descriptors */
-	for (int i = 0; i < req->out + req->in; i++)
-		demu_unmap_guest_range(req->iov[i].iov_base, req->iov[i].iov_len);
-#endif
 }
 
 static void virtio_blk_do_io_request(struct kvm *kvm, struct virt_queue *vq, struct blk_dev_req *req)
