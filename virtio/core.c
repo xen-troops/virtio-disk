@@ -88,6 +88,7 @@ static unsigned next_desc(struct virt_queue *vq, struct vring_desc *desc,
 u16 virt_queue__get_head_iov(struct virt_queue *vq, struct iovec iov[], u16 *out, u16 *in, u16 head, struct kvm *kvm)
 {
 	struct vring_desc *desc;
+	bool is_write;
 	u16 idx;
 	u16 max;
 #ifndef MAP_IN_ADVANCE
@@ -104,7 +105,7 @@ u16 virt_queue__get_head_iov(struct virt_queue *vq, struct iovec iov[], u16 *out
 #ifndef MAP_IN_ADVANCE
 		mapped = virtio_guest_to_host_u32(vq, desc[idx].len);
 		desc = demu_map_guest_range(virtio_guest_to_host_u64(vq, desc[idx].addr),
-				virtio_guest_to_host_u32(vq, desc[idx].len));
+				virtio_guest_to_host_u32(vq, desc[idx].len), PROT_READ);
 #else
 		desc = demu_get_host_addr(virtio_guest_to_host_u64(vq, desc[idx].addr));
 #endif
@@ -112,20 +113,23 @@ u16 virt_queue__get_head_iov(struct virt_queue *vq, struct iovec iov[], u16 *out
 	}
 
 	do {
+		is_write = virt_desc__test_flag(vq, &desc[idx], VRING_DESC_F_WRITE);
+
 		/* Grab the first descriptor, and check it's OK. */
 		iov[*out + *in].iov_len = virtio_guest_to_host_u32(vq, desc[idx].len);
 		/* Map all descriptors */
 #ifndef MAP_IN_ADVANCE
 		iov[*out + *in].iov_base = demu_map_guest_range(
 				virtio_guest_to_host_u64(vq, desc[idx].addr),
-				virtio_guest_to_host_u32(vq, desc[idx].len));
+				virtio_guest_to_host_u32(vq, desc[idx].len),
+				is_write ? PROT_WRITE : PROT_READ);
 #else
 		iov[*out + *in].iov_base = demu_get_host_addr(
 				virtio_guest_to_host_u64(vq, desc[idx].addr));
 #endif
 
 		/* If this is an input descriptor, increment that count. */
-		if (virt_desc__test_flag(vq, &desc[idx], VRING_DESC_F_WRITE))
+		if (is_write)
 			(*in)++;
 		else
 			(*out)++;
@@ -165,7 +169,7 @@ u16 virt_queue__get_inout_iov(struct kvm *kvm, struct virt_queue *queue,
 		if (virt_desc__test_flag(queue, desc, VRING_DESC_F_WRITE)) {
 #ifndef MAP_IN_ADVANCE
 			in_iov[*in].iov_base = demu_map_guest_range(addr,
-					virtio_guest_to_host_u32(queue, desc->len));
+					virtio_guest_to_host_u32(queue, desc->len), PROT_WRITE);
 #else
 			in_iov[*in].iov_base = demu_get_host_addr(addr);
 #endif
@@ -174,7 +178,7 @@ u16 virt_queue__get_inout_iov(struct kvm *kvm, struct virt_queue *queue,
 		} else {
 #ifndef MAP_IN_ADVANCE
 			out_iov[*out].iov_base = demu_map_guest_range(addr,
-					virtio_guest_to_host_u32(queue, desc->len));
+					virtio_guest_to_host_u32(queue, desc->len), PROT_READ);
 #else
 			out_iov[*out].iov_base = demu_get_host_addr(addr);
 #endif
@@ -202,7 +206,7 @@ void virtio_init_device_vq(struct kvm *kvm, struct virtio_device *vdev,
 	if (addr->legacy) {
 		unsigned long base = (u64)addr->pfn * addr->pgsize;
 #ifndef MAP_IN_ADVANCE
-		void *p = demu_map_guest_range(base, vring_size(nr_descs, addr->align));
+		void *p = demu_map_guest_range(base, vring_size(nr_descs, addr->align), PROT_READ | PROT_WRITE);
 #else
 		void *p = demu_get_host_addr(base);
 #endif
@@ -216,9 +220,9 @@ void virtio_init_device_vq(struct kvm *kvm, struct virtio_device *vdev,
 
 		vq->vring = (struct vring) {
 #ifndef MAP_IN_ADVANCE
-			.desc	= demu_map_guest_range(desc, PAGE_SIZE),
-			.used	= demu_map_guest_range(used, PAGE_SIZE),
-			.avail	= demu_map_guest_range(avail, PAGE_SIZE),
+			.desc	= demu_map_guest_range(desc, PAGE_SIZE, PROT_READ | PROT_WRITE),
+			.used	= demu_map_guest_range(used, PAGE_SIZE, PROT_READ | PROT_WRITE),
+			.avail	= demu_map_guest_range(avail, PAGE_SIZE, PROT_READ | PROT_WRITE),
 #else
 			.desc	= demu_get_host_addr(desc),
 			.used	= demu_get_host_addr(used),

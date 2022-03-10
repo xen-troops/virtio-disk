@@ -39,7 +39,7 @@ LDLIBS := -lutil -lrt
 endif
 
 LDLIBS += -lxenstore -lxenctrl -lpthread \
-	-lxenforeignmemory -lxenevtchn -lxendevicemodel #-laio
+	-lxenforeignmemory -lxenevtchn -lxendevicemodel -lxengnttab #-laio
 
 # Get gcc to generate the dependencies for us.
 CFLAGS   += -Wp,-MD,$(@D)/.$(@F).d

@@ -61,6 +61,7 @@
 #include <xenevtchn.h>
 #include <xendevicemodel.h>
 #include <xen/hvm/ioreq.h>
+#include <xengnttab.h>
 
 #include "debug.h"
 #include "device.h"
@@ -119,6 +120,8 @@ typedef struct demu_state {
     xenevtchn_handle                 *xeh;
     xenforeignmemory_handle          *xfh;
     xendevicemodel_handle            *xdh;
+    xengnttab_handle                 *xgt;
+    int                              use_gnttab;
     domid_t                          domid;
     domid_t                          be_domid;
     unsigned int                     vcpus;
@@ -139,44 +142,118 @@ demu_set_irq(int irq, int level)
                                  irq, level);
 }
 
-void *
-demu_map_guest_pages(xen_pfn_t pfn[], unsigned int n)
+static void *demu_map_guest_pages(xen_pfn_t pfn[], unsigned int n, int prot)
 {
-    return xenforeignmemory_map(demu_state.xfh, demu_state.domid,
-                                PROT_READ | PROT_WRITE, n,
-                                pfn, NULL);
+    void *ptr;
+
+    ptr = xenforeignmemory_map(demu_state.xfh, demu_state.domid,
+                               prot, n, pfn, NULL);
+    if (ptr == NULL)
+        DBG("Failed to map pages (pfn 0x%lx count %u prot %d)\n",
+            pfn[0], n, prot);
+
+    return ptr;
+}
+
+static void demu_unmap_guest_pages(void *ptr, unsigned int n)
+{
+    int rc;
+
+    rc = xenforeignmemory_unmap(demu_state.xfh, ptr, n);
+    if (rc)
+        DBG("Failed to unmap pages (va %p count %u)\n", ptr, n);
+}
+
+static void *demu_map_guest_grant_refs(uint32_t grants[], unsigned int n, int prot)
+{
+    void *ptr;
+
+    ptr = xengnttab_map_domain_grant_refs(demu_state.xgt, n, demu_state.domid,
+                                          grants, prot);
+    if (ptr == NULL)
+        DBG("Failed to map grant refs (grant 0x%x count %u prot %d)\n",
+            grants[0], n, prot);
+
+    return ptr;
+}
+
+static void demu_unmap_guest_grant_refs(void *ptr, unsigned int n)
+{
+    int rc;
+
+    rc = xengnttab_unmap(demu_state.xgt, ptr, n);
+    if (rc)
+        DBG("Failed to unmap grant refs (va %p count %u)\n", ptr, n);
+}
+
+#define XEN_GRANT_ADDR_OFF   0x8000000000000000ULL
+
+static void demu_detect_mappings_model(uint64_t addr)
+{
+    if (demu_state.use_gnttab >= 0)
+        return;
+
+    demu_state.use_gnttab = addr & XEN_GRANT_ADDR_OFF ? 1 : 0;
+
+    DBG("Use %s mapping (addr 0x%lx)\n",
+        demu_state.use_gnttab > 0 ? "grant" : "foreign", addr);
 }
 
 void *
-demu_map_guest_range(uint64_t addr, uint64_t size)
+demu_map_guest_range(uint64_t addr, uint64_t size, int prot)
 {
-    xen_pfn_t   *pfn;
-    int         i, n;
+    xen_pfn_t   *pfn = NULL;
+    uint32_t    *grants = NULL;
+    unsigned int         i, n;
     void        *ptr;
 
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
     n = size >> TARGET_PAGE_SHIFT;
 
-    pfn = malloc(sizeof (xen_pfn_t) * n);
-    if (pfn == NULL)
-        goto fail1;
+    demu_detect_mappings_model(addr);
 
-    for (i = 0; i < n; i++)
-        pfn[i] = (addr >> TARGET_PAGE_SHIFT) + i;
+    if (demu_state.use_gnttab > 0) {
+        BUG_ON(!(addr & XEN_GRANT_ADDR_OFF));
 
-    ptr = demu_map_guest_pages(pfn, n);
-    if (ptr == NULL)
-        goto fail2;
+        grants = malloc(sizeof (uint32_t) * n);
+        if (grants == NULL)
+            goto fail1;
 
-    free(pfn);
+        for (i = 0; i < n; i++)
+            grants[i] = ((addr & ~XEN_GRANT_ADDR_OFF) >> TARGET_PAGE_SHIFT) + i;
+
+        ptr = demu_map_guest_grant_refs(grants, n, prot);
+        if (ptr == NULL)
+            goto fail2;
+
+        free(grants);
+    } else {
+        BUG_ON(addr & XEN_GRANT_ADDR_OFF);
+
+        pfn = malloc(sizeof(xen_pfn_t) * n);
+        if (pfn == NULL)
+            goto fail1;
+
+        for (i = 0; i < n; i++)
+            pfn[i] = (addr >> TARGET_PAGE_SHIFT) + i;
+
+        ptr = demu_map_guest_pages(pfn, n, prot);
+        if (ptr == NULL)
+            goto fail2;
+
+        free(pfn);
+    }
 
     return ptr + (addr & ~TARGET_PAGE_MASK);
 
 fail2:
     DBG("fail2\n");
     
-    free(pfn);
-    
+    if (pfn)
+        free(pfn);
+    if (grants)
+        free(grants);
+
 fail1:
     DBG("fail1\n");
 
@@ -184,21 +261,18 @@ fail1:
     return NULL;
 }
 
-void
-demu_unmap_guest_pages(void *ptr, unsigned int n)
-{
-    xenforeignmemory_unmap(demu_state.xfh, ptr, n);
-}
-
 int
 demu_unmap_guest_range(void *ptr, uint64_t size)
 {
-    int n;
+    unsigned int n;
 
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
     n = size >> TARGET_PAGE_SHIFT;
 
-    demu_unmap_guest_pages((void *)((unsigned long)ptr & TARGET_PAGE_MASK), n);
+    if (demu_state.use_gnttab > 0)
+        demu_unmap_guest_grant_refs((void *)((unsigned long)ptr & TARGET_PAGE_MASK), n);
+    else
+        demu_unmap_guest_pages((void *)((unsigned long)ptr & TARGET_PAGE_MASK), n);
 
     return 0;
 }
@@ -267,7 +341,8 @@ static int demu_map_guest_ram(void)
 		if (!guest_ram_base[i] || !guest_ram_size[i])
 			continue;
 
-		host_addr[i] = demu_map_guest_range(guest_ram_base[i], guest_ram_size[i]);
+		host_addr[i] = demu_map_guest_range(guest_ram_base[i], guest_ram_size[i],
+				PROT_READ | PROT_WRITE);
 
 		if (!host_addr[i]) {
 			DBG("Cannot map guest ram%u pa 0x%lx-0x%lx\n",
@@ -680,6 +755,8 @@ demu_teardown(void)
     if (demu_state.seq >= DEMU_SEQ_XENDEVICEMODEL_OPEN) {
         DBG("<XENDEVICEMODEL_OPEN\n");
 
+        xengnttab_close(demu_state.xgt);
+
         xendevicemodel_close(demu_state.xdh);
 
         demu_state.seq = DEMU_SEQ_XENFOREIGNMEMORY_OPEN;
@@ -795,6 +872,11 @@ demu_initialize(void)
     demu_state.xdh = xendevicemodel_open(NULL, 0);
     if (demu_state.xdh == NULL)
         goto fail3;
+
+    demu_state.use_gnttab = -1;
+    demu_state.xgt = xengnttab_open(NULL, 0);
+    if (demu_state.xgt == NULL)
+        goto fail4;
 
     demu_seq_next();
 
