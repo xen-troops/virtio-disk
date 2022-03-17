@@ -188,6 +188,7 @@ static void demu_unmap_guest_grant_refs(void *ptr, unsigned int n)
 
 #define XEN_GRANT_ADDR_OFF   0x8000000000000000ULL
 
+#ifndef MAP_IN_ADVANCE
 static void demu_detect_mappings_model(uint64_t addr)
 {
     if (demu_state.use_gnttab >= 0)
@@ -198,6 +199,7 @@ static void demu_detect_mappings_model(uint64_t addr)
     DBG("Use %s mapping (addr 0x%lx)\n",
         demu_state.use_gnttab > 0 ? "grant" : "foreign", addr);
 }
+#endif
 
 void *
 demu_map_guest_range(uint64_t addr, uint64_t size, int prot)
@@ -210,7 +212,9 @@ demu_map_guest_range(uint64_t addr, uint64_t size, int prot)
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
     n = size >> TARGET_PAGE_SHIFT;
 
+#ifndef MAP_IN_ADVANCE
     demu_detect_mappings_model(addr);
+#endif
 
     if (demu_state.use_gnttab > 0) {
         BUG_ON(!(addr & XEN_GRANT_ADDR_OFF));
@@ -387,6 +391,12 @@ void *demu_get_host_addr(uint64_t offset)
 	void *addr;
 	unsigned int i;
 
+	if (offset & XEN_GRANT_ADDR_OFF) {
+		DBG("The highest bit is set in guest pa 0x%lx (MAP_IN_ADVANCE option must be disabled)\n",
+				offset);
+		BUG_ON(1);
+	}
+
 	for (i = 0; i < NR_GUEST_RAM; i++) {
 		if (!host_addr[i])
 			continue;
@@ -401,7 +411,6 @@ void *demu_get_host_addr(uint64_t offset)
 	}
 
 	DBG("Cannot translate guest pa 0x%lx\n", offset);
-	assert(0);
 
 	return NULL;
 }
