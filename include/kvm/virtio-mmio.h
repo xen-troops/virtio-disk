@@ -58,7 +58,7 @@ struct virtio_mmio {
 	u32			addr;
 	void			*dev;
 	struct kvm		*kvm;
-	u8			irq;
+	u32			irq;
 	struct virtio_mmio_hdr	hdr;
 #if 0
 	struct virtio_mmio_ioevent_param ioeventfds[VIRTIO_MMIO_MAX_VQ];
@@ -69,9 +69,8 @@ int virtio_mmio_signal_vq(struct kvm *kvm, struct virtio_device *vdev, u32 vq);
 int virtio_mmio_signal_config(struct kvm *kvm, struct virtio_device *vdev);
 int virtio_mmio_exit(struct kvm *kvm, struct virtio_device *vdev);
 int virtio_mmio_reset(struct kvm *kvm, struct virtio_device *vdev);
-/* XXX make irq 16-bit at least */
 int virtio_mmio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
-		      int device_id, int subsys_id, int class, u32 addr, u8 irq);
+		      int device_id, int subsys_id, int class, u32 addr, u32 irq);
 #if 0
 int virtio_mmio_init_ioeventfd(struct kvm *kvm, struct virtio_device *vdev,
 			       u32 vq);

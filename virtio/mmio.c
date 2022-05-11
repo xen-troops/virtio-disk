@@ -128,7 +128,7 @@ void virtio_mmio_device_specific(u64 addr, u8 *data,
 }
 
 int virtio_mmio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
-		     int device_id, int subsys_id, int class, u32 addr, u8 irq)
+		     int device_id, int subsys_id, int class, u32 addr, u32 irq)
 {
 	bool legacy = vdev->legacy;
 	struct virtio_mmio *vmmio = vdev->virtio;

@@ -396,7 +396,7 @@ bool virtio_write_config(struct kvm *kvm, struct virtio_device *vdev, void *dev,
 
 int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		struct virtio_ops *ops, enum virtio_trans trans,
-		int device_id, int subsys_id, int class, u32 addr, u8 irq)
+		int device_id, int subsys_id, int class, u32 addr, u32 irq)
 {
 	void *virtio;
 	int r;

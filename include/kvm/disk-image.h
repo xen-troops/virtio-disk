@@ -58,7 +58,7 @@ struct disk_image_params {
 	bool direct;
 
 	u32 addr;
-	u8 irq;
+	u32 irq;
 };
 
 struct disk_image {
@@ -81,7 +81,7 @@ struct disk_image {
 	int				debug_iodelay;
 
 	u32 addr;
-	u8 irq;
+	u32 irq;
 };
 
 #if 0
