@@ -210,6 +210,7 @@ demu_map_guest_range(uint64_t addr, uint64_t size, int prot)
     unsigned int         i, n;
     void        *ptr;
 
+    size += addr & ~TARGET_PAGE_MASK;
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
     n = size >> TARGET_PAGE_SHIFT;
 
@@ -271,6 +272,7 @@ demu_unmap_guest_range(void *ptr, uint64_t size)
 {
     unsigned int n;
 
+    size += (unsigned long)ptr & ~TARGET_PAGE_MASK;
     size = P2ROUNDUP(size, TARGET_PAGE_SIZE);
     n = size >> TARGET_PAGE_SHIFT;
 
