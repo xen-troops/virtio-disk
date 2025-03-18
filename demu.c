@@ -294,15 +294,15 @@ static uint64_t guest_ram_size[NR_GUEST_RAM];
 /* TODO Find a proper way to get guest ram bank info */
 static uint64_t xenctrl_get_dom_mem(domid_t domid)
 {
-	xc_dominfo_t dominfo;
+	xc_domaininfo_t dominfo;
 	xc_interface *xch;
 
 	xch = xc_interface_open(NULL, NULL, 0);
 	if (xch == NULL)
 		return 0;
 
-	if ((xc_domain_getinfo(xch, domid, 1, &dominfo) != 1) ||
-			(dominfo.domid != domid)) {
+	if ((xc_domain_getinfo_single(xch, domid, &dominfo) < 0) ||
+			(dominfo.domain != domid)) {
 		DBG("Failed to get domain information\n");
 		xc_interface_close(xch);
 		return 0;
@@ -310,7 +310,7 @@ static uint64_t xenctrl_get_dom_mem(domid_t domid)
 
 	xc_interface_close(xch);
 
-	return (dominfo.nr_pages - 4) << TARGET_PAGE_SHIFT;
+	return (dominfo.tot_pages - 4) << TARGET_PAGE_SHIFT;
 }
 
 static int demu_init_guest_ram(void)
