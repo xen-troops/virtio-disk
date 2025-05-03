@@ -8,6 +8,7 @@
 #include "kvm/virtio-mmio.h"
 #include "kvm/util.h"
 #include "kvm/kvm.h"
+#include "virtio-pci.h"
 
 #include "../demu.h"
 
@@ -421,6 +422,20 @@ int virtio_init(struct kvm *kvm, void *dev, struct virtio_device *vdev,
 		vdev->ops->reset		= virtio_mmio_reset;
 		r = vdev->ops->init(kvm, dev, vdev, device_id, subsys_id, class, addr, irq);
 		break;
+	case VIRTIO_PCI:
+		virtio = calloc(sizeof(struct virtio_pci), 1);
+		if (!virtio)
+			return -ENOMEM;
+		vdev->virtio			= virtio;
+		vdev->ops			= ops;
+		vdev->ops->signal_vq		= virtio_pci_signal_vq;
+		vdev->ops->signal_config	= virtio_pci_signal_config;
+		vdev->ops->init			= virtio_pci_init;
+		vdev->ops->exit			= virtio_pci_exit;
+		vdev->ops->reset		= virtio_pci_reset;
+		r = vdev->ops->init(kvm, dev, vdev, device_id, subsys_id, class, addr, irq);
+		break;
+
 	default:
 		r = -1;
 	};

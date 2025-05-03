@@ -548,6 +548,28 @@ demu_deregister_memory_space(uint64_t start)
                                                     1, start, end);
 }
 
+int demu_register_pcidev(uint8_t bus, uint8_t device, uint8_t function)
+{
+    DBG("%02x:%02x:%02x\n", bus, device, function);
+
+    return xendevicemodel_map_pcidev_to_ioreq_server(demu_state.xdh,
+                                                     demu_state.domid,
+                                                     demu_state.ioservid,
+                                                     0, bus, device, function);
+}
+
+
+void demu_deregister_pcidev(uint8_t bus, uint8_t device, uint8_t function)
+{
+    DBG("%02x:%02x:%02x\n", bus, device, function);
+
+    (void) xendevicemodel_unmap_pcidev_from_ioreq_server(demu_state.xdh,
+                                                         demu_state.domid,
+                                                         demu_state.ioservid,
+                                                         0, bus, device,
+                                                         function);
+}
+
 static void
 demu_handle_io(ioreq_t *ioreq)
 {

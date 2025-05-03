@@ -49,6 +49,8 @@ int demu_register_memory_space(uint64_t start, uint64_t size,
     void *ptr);
 
 void demu_deregister_memory_space(uint64_t start);
+int demu_register_pcidev(uint8_t bus, uint8_t device, uint8_t function);
+void demu_deregister_pcidev(uint8_t bus, uint8_t device, uint8_t function);
 
 #ifdef MAP_IN_ADVANCE
 void *demu_get_host_addr(uint64_t offset);

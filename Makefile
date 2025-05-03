@@ -4,14 +4,17 @@ PREFIX=/usr/bin
 
 OBJS :=	device.o \
 	xs_dev.o \
+	pci.o \
 	demu.o
 
 
 OBJS	+= virtio/blk.o
 OBJS	+= virtio/core.o
 OBJS	+= virtio/mmio.o
+OBJS	+= virtio/pci.o
 OBJS	+= virtio/mmio-legacy.o
 OBJS	+= virtio/mmio-modern.o
+OBJS	+= virtio/pci-modern.o
 
 OBJS	+= disk/core.o
 OBJS	+= disk/blk.o
@@ -27,7 +30,7 @@ OBJS	+= util/util.o
 #CC  := $(CROSS_COMPILE)gcc
 #LD  := $(CROSS_COMPILE)ld
 
-CFLAGS  = -I$(shell pwd)/include
+CFLAGS  = -I. -I$(shell pwd)/include
 
 # _GNU_SOURCE for asprintf.
 CFLAGS += -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_GNU_SOURCE #-DMAP_IN_ADVANCE -DCONFIG_HAS_AIO
